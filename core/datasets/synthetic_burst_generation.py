@@ -360,7 +360,7 @@ class SyntheticBurst(Dataset):
     burst, image_gt = self.base_dataset[index]
     # Generate JPG burst
     burst, image_gt = self.process_jpg_burst(burst, image_gt)
-    return burst, image_gt
+    return burst, image_gt.squeeze(0)
 
 
 
