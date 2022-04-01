@@ -181,6 +181,7 @@ if __name__ == '__main__':
   # parameters of the model architecture
   parser_archi = parser.add_argument_group("archi", "Model architecture parameters.")
   parser_archi.add_argument("--model", type=str)
+  parser_archi.add_argument("--n_channels", type=int, default=8)
   
   # parse all arguments and define config object
   args = parser.parse_args()
