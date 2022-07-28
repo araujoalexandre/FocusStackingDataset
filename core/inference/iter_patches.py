@@ -17,10 +17,10 @@ class IterPatchesImage:
 
     self.batch_size = config.eval.eval_batch_size
     self.crop_size = config.eval.crop // 4 * 4 # force even crop factor to keep the correct rggb pattern
-    self.block_size = config.eval.window
+    self.block_size = config.eval.patch_size
     stride = config.eval.stride
     if config.eval.stride is None:
-      stride = config.eval.window
+      stride = config.eval.patch_size
     self.upscale = config.data.downsample_factor
     self.block_stride = stride - 2 * self.crop_size // self.upscale
     self.center_pad = center_pad
@@ -34,7 +34,7 @@ class IterPatchesImage:
     # batch, n_blocks, channels, hb, wb = blocks.shape
     self.n_blocks = self.blocks_coord[0].shape[1]
     patch_size = self.block_size * self.upscale - 2 * self.crop_size
-    self.batch_out_blocks = torch.zeros(self.n_blocks, 3, patch_size, patch_size)
+    self.batch_out_blocks = torch.zeros(self.n_blocks, self.n_channels, patch_size, patch_size)
 
     self.all_indexes = list(range(0, self.n_blocks, self.batch_size))
 
@@ -123,11 +123,8 @@ class IterPatchesImage:
     raise StopIteration
 
   def add_processed_patches(self, batch_patches):
-    if batch_patches.shape[1] == 1:
-      batch_patches = batch_patches.squeeze(1)
     crop = self.crop_size
     batch_patches = batch_patches[:, :, crop:-crop or None, crop:-crop or None]
-    # for i, j in enumerate(self.indexes):
     start = self.indexes[0]
     self.batch_out_blocks[start:start+self.batch_size, ...] = batch_patches
 
@@ -153,12 +150,7 @@ class IterPatchesImage:
                            padding=0,
                            avg=self.avg)
 
-    # if not self.crop_out:
-    #   output_padded = F.pad(output_padded, (self.crop,) * 4, mode=self.pad_mode)  # restore erased edges
-    #   return output_padded
-
     output = output_padded[:, :, pad[2]:-pad[3] or None, pad[0]:-pad[1] or None]
-    # output = F.pad(output, (self.crop, )*4, mode=self.pad_mode) # restore erased edges
     return output
 
 

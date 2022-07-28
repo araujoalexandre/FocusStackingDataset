@@ -11,7 +11,7 @@ import submitit
 from os.path import join, exists
 
 from core import utils
-from core.models.models import models_config
+from core.models import models_config
 from core.datasets.readers import readers_config
 
 import numpy as np
@@ -210,7 +210,7 @@ class Trainer:
         if global_step == 2 and self.is_master:
           start_time = time.time()
         epoch = (int(global_step) * self.global_batch_size) / self.reader.n_train_files
-        self.one_step_training(data, epoch, global_step)
+        self.one_step_training(data, epoch_id, epoch, global_step)
         self._save_ckpt(global_step, epoch_id)
         if global_step == 20 and self.is_master:
           self._print_approximated_train_time(start_time)
@@ -236,19 +236,27 @@ class Trainer:
     return (step % frequency == 0 and self.local_rank == 0) or \
         (step == 1 and self.local_rank == 0)
 
-  def one_step_training(self, data, epoch, step):
+  def one_step_training(self, data, epoch_id, epoch, step):
 
     self.optimizer.zero_grad()
 
     batch_start_time = time.time()
     burst, frame_gt = data
+    if step == 0:
+      torch.save(burst, './burst.pt')
+      torch.save(frame_gt, './frame_gt.pt')
+
+    burst = burst.cuda(non_blocking=True)
+    frame_gt = frame_gt.cuda(non_blocking=True)
+    if self.config.archi.n_colors == 1:
+      frame_gt = frame_gt.mean(2)
 
     if step == 0 and self.local_rank == 0:
       logging.info(f'burst {burst.shape}')
       logging.info(f'ground truth {frame_gt.shape}')
 
-    burst = burst.cuda(non_blocking=True)
-    frame_gt = frame_gt.cuda(non_blocking=True)
+    burst = burst - 0.5
+    frame_gt = frame_gt - 0.5
 
     if self.config.project.autocast:
       burst = burst.half()
@@ -264,7 +272,6 @@ class Trainer:
 
       loss = self.criterion(outputs, frame_gt)
       psnr = self.psnr(outputs, frame_gt)
-
 
     if self.config.project.autocast:
       self.scaler.scale(loss).backward()

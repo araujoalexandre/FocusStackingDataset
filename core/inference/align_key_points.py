@@ -227,6 +227,7 @@ class AlignImages:
       aligned_images[i] = aligned
       aligned_grayscales[i] = self.convert_to_grayscale(aligned)
 
+    aligned_images = np.array(aligned_images)
     return torch.Tensor(aligned_images).permute(0, 3, 1, 2) / 255
 
 

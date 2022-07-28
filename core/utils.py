@@ -9,6 +9,7 @@ import glob
 import copy
 import subprocess
 import pickle
+import natsort
 import cv2
 from os.path import join, exists
 
@@ -108,14 +109,13 @@ def setup_distributed_training(world_size, rank):
   dist.init_process_group(backend='nccl', init_method=dist_url,
     world_size=world_size, rank=rank)
 
-
-def get_global_step_from_ckpt(filename):
+def get_epochs_from_ckpt(filename):
   regex = "(?<=ckpt-)[0-9]+"
   return int(re.findall(regex, filename)[-1])
 
 def get_list_checkpoints(train_dir):
-  files = glob.glob(join(train_dir, 'model.ckpt-*.pth'))
-  files = sorted(files, key=get_global_step_from_ckpt)
+  files = glob.glob(join(train_dir, 'checkpoints', 'model.ckpt-*.pth'))
+  files = natsort.natsorted(files, key=get_epochs_from_ckpt)
   return [filename for filename in files]
 
 def get_checkpoint(train_dir, last_global_step):
@@ -207,8 +207,18 @@ class PSNR(nn.Module):
     psnr = 20 * np.log10(self.max_value) - 10.0 * mse.log10()
     return psnr
 
+  def processed(self, image):
+    if image.dim() == 3:
+      image = image[None]
+    if image.shape[-1] == 3:
+      image = image.permute(0, 3, 1, 2)
+    if image.max() > 2 and self.max_value == 1:
+      image = image / 255.
+    return image
+
   def forward(self, pred, gt, valid=None, **kwargs):
-    assert pred.dim() == 4 and pred.shape == gt.shape
+    pred, gt = self.processed(pred), self.processed(gt)
+    assert pred.dim() == 4 and pred.shape == gt.shape, f'{pred.shape}, {gt.shape}'
     if valid is None:
       psnr_all = [self.psnr(p.unsqueeze(0), g.unsqueeze(0)) for p, g in zip(pred, gt)]
     else:

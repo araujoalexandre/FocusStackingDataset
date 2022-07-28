@@ -209,6 +209,7 @@ class SyntheticBurst(Dataset):
     self.burst_size = config.data.burst_size
     self.crop_sz = config.data.crop_sz
     self.downsample_factor = config.data.downsample_factor
+    self.random_order = config.data.random_burst
 
     self.burst_transformation_params = {'max_translation': config.data.max_translation,
                                         'max_rotation': config.data.max_rotation,
@@ -325,6 +326,10 @@ class SyntheticBurst(Dataset):
 
     # Extract a random crop from the image
     burst_rgb_crop, image_gt_crop = random_crop.crop(burst_pad, image_gt_pad)
+
+    if self.random_order:
+      r = torch.randperm(self.burst_size)
+      burst_rgb_crop = burst_rgb_crop[r]
 
     return burst_rgb_crop, image_gt_crop
 

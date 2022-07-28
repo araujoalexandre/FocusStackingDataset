@@ -1,4 +1,5 @@
 import os
+import logging
 import torch
 import numpy as np
 import rawpy
@@ -120,13 +121,14 @@ def flatten_raw_image(im_raw_4ch):
   im_out[1::2, 1::2] = im_raw_4ch[3, :, :]
   return im_out
 
-def load_raw_image(path,visible=True):
+def load_raw_image(path, scaling, visible=True):
   # raw_value_visible
   raw = rawpy.imread(path)
   im_raw = rollPattern(raw, visible=visible)
   im_raw = pack_raw_image(im_raw).astype(np.int16) # convert to rggb 4 channels
   im_raw = im_raw.transpose(1, 2, 0)
-  im_raw = cv2.resize(im_raw, None, None, 0.2, 0.2, cv2.INTER_AREA)
+  if scaling:
+    im_raw = cv2.resize(im_raw, None, None, scaling, scaling, cv2.INTER_AREA)
   im_raw = im_raw.transpose(2, 0, 1)
   im_raw = torch.from_numpy(im_raw)
   idx_channels = getColorDestIdx(raw)
@@ -143,83 +145,105 @@ def load_raw_image(path,visible=True):
   white_level = [white_level[i] for i in idx_channels]
   meta_info = {'black_level': black_level, 'white_level': white_level,'cam_wb': cam_wb,
                'daylight_wb': daylight_wb,'color_mat': raw.rgb_xyz_matrix.tolist()}
-  return im_raw.float(), meta_info 
+  return im_raw.float()[None], meta_info 
 
+
+def load_jpg_image(path, scaling):
+  image = cv2.imread(path)
+  image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+  if scaling:
+    image = cv2.resize(image, None, None, scaling, scaling, cv2.INTER_AREA)
+  image = torch.FloatTensor(image)
+  image = image.permute(2, 0, 1)
+  image = image[None]
+  image = image / 255
+  return image, None
 
 class Burst:
   """ Real-world burst super-resolution dataset. """
 
-  def __init__(self, root, burst_size, visible=True, random_order=True):
-    self.burst_size = burst_size
+  def __init__(self, root, burst_size, image_type, scaling):
     self.root = root
-    self.visible = visible 
+    self.burst_size = burst_size
+    self.image_type = image_type
+    self.scaling = scaling
+    self.visible = True
     self.files_list = self.get_files_list(root, burst_size)
 
   def get_files_list(self, root, burst_size):
-    burst_list = natsorted(os.listdir('{}'.format(root)))
+    burst_list = natsorted(os.listdir(f'{root}/{self.image_type}'))
     if len(burst_list) > burst_size:
       burst_list = burst_list[::int(len(burst_list)//burst_size)][:burst_size]
-    burst_list = [join(root, l) for l in burst_list]
+    # logging.info(f'burst_list: {burst_list}')
+    burst_list = [join(root, self.image_type, l) for l in burst_list]
     return burst_list
 
   def get_burst(self):
-    # Load the RAW files
     burst_image_data = []
     for path in self.files_list:
-      image, meta_info  = load_raw_image(path, self.visible)
+      if self.image_type == 'raw':
+        image, meta_info = load_raw_image(path, self.scaling, self.visible)
+      elif self.image_type == 'jpg':
+        image, meta_info = load_jpg_image(path, self.scaling)
       burst_image_data.append(image)
-    burst = torch.stack(burst_image_data, dim=0)
-    burst = burst.float()
+    burst = torch.cat(burst_image_data, 0).float()
+    logging.info(f'burst: {burst.shape}')
+    if self.image_type == 'raw':
+      # convert raw burst to RGB burst
+      burst = postprocess_raw(burst, meta_info,
+                              linearize=True, demosaic=True, wb=True, dwb=False,
+                              ccm=True, brightness=True, gamma=True, tonemap=True)
     return burst, meta_info
 
 
 
-def postprocess_raw(image, meta_info, demosaic=False, linearize=False, wb=False, dwb=False,
-                    ccm=False, gamma=False, tonemap=False, brightness=False):
+
+def postprocess_raw(burst, meta_info, linearize=False, demosaic=False, wb=False, dwb=False,
+                    ccm=False, brightness=False, gamma=False, tonemap=False):
 
   if linearize:  # linearize in [0,1]
     black = torch.tensor(meta_info['black_level']).view(4, 1, 1)
     saturation = torch.tensor(meta_info['white_level']).view(4, 1, 1)
-    image = (image - black) / (saturation - black)
-    image = image.clip(0, 1)
+    burst = (burst - black) / (saturation - black)
+    burst = burst.clip(0, 1)
 
   if demosaic:
-    image = demosaic_bilinear(image)
-
+    burst = demosaic_bilinear(burst)
+  
   # white balance
   if wb:
     cam_wb = torch.tensor(meta_info['cam_wb'])
-    image = image * cam_wb[[0, 1, -1]].view(3, 1, 1) / cam_wb[1]
+    burst = burst * cam_wb[[0, 1, -1]].view(3, 1, 1) / cam_wb[1]
   elif dwb:
     daylight_wb = torch.tensor(meta_info['daylight_wb'])
-    image = image * daylight_wb[[0, 1, -1]].view(3, 1, 1) / daylight_wb[1]
+    burst = burst * daylight_wb[[0, 1, -1]].view(3, 1, 1) / daylight_wb[1]
 
   # color matrix
   if ccm:
     xyz2cam = meta_info['color_mat']
     cam2rgb = get_cam2rgb(xyz2cam)
-    if image.dim() == 4:
-      image_ = []
-      for i in range(image.shape[0]):
-        image_.append(camera.apply_ccm(image[i], cam2rgb)[None])
-      image = torch.cat(image_, 0)
+    if burst.dim() == 4:
+      bursts = []
+      for i in range(burst.shape[0]):
+        bursts.append(camera.apply_ccm(burst[i], cam2rgb)[None])
+      burst = torch.cat(bursts, 0)
     else:
-      image = camera.apply_ccm(image, cam2rgb)
-    image = image.clamp(0.0, 1.0)
+      burst = camera.apply_ccm(burst, cam2rgb)
+    burst = burst.clamp(0.0, 1.0)
 
   if brightness:
-    grayscale = 0.25 / image.mean()
-    image = image * grayscale
+    grayscale = 0.25 / burst.mean()
+    burst = burst * grayscale
 
-  image = image.clamp(0.0, 1.0)
+  burst = burst.clamp(0.0, 1.0)
 
   if gamma:
-    image = (image+1e-8) ** (1.0 / 2.2)
+    burst = (burst+1e-8) ** (1.0 / 2.2)
 
   if tonemap:
-    image = 3 * image ** 2 - 2 * image ** 3
+    burst = 3 * burst ** 2 - 2 * burst ** 3
 
-  return image
+  return burst
 
 
 

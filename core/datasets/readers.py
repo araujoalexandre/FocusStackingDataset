@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torchvision.transforms import Compose
 
-from core.datasets.datasets import DdDpCanonDataset
+from core.datasets.datasets import DdDpCanonDataset, FocusDataset
 from core.datasets.synthetic_burst_generation import SyntheticBurst
 
 
@@ -47,7 +47,7 @@ class BaseReader:
     loader = DataLoader(self.dataset,
                         batch_size=self.batch_size,
                         num_workers=self.num_workers,
-                        shuffle=self.is_training and not sampler,
+                        # shuffle=self.is_training and not sampler,
                         pin_memory=False,
                         prefetch_factor=self.prefetch_factor,
                         sampler=sampler)
@@ -72,7 +72,21 @@ class SimulatedBlurReader(BaseReader):
       DdDpCanonDataset(self.path, split=split), config)
 
 
+class FocusStackReader(BaseReader):
+
+  def __init__(self, config, batch_size, is_distributed, is_training):
+    super(FocusStackReader, self).__init__(config, batch_size, is_distributed, is_training)
+    self.dataset_name = 'focus_stack'
+    self.path = get_data_dir(config.project.data_dir, 'focus_stack_dataset')
+    split = 'train' if self.is_training else 'test'
+    self.dataset = FocusDataset(self.path, split=split)
+    n_patches_by_images = (5184 // 128) * (3888 // 128)
+    self.n_train_files = self.dataset.n_train_files * n_patches_by_images
+    self.n_test_files = self.dataset.n_test_files * n_patches_by_images
+
+
 readers_config  = {
-  'simulated_blur': SimulatedBlurReader
+  'simulated_blur': SimulatedBlurReader,
+  'focus': FocusStackReader
 }
 
