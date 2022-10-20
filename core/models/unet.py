@@ -33,7 +33,7 @@ class UNet(nn.Module):
     super(UNet, self).__init__()
     self.config = config
     features = config.archi.n_channels
-    in_channels = 3 * config.data.burst_size
+    in_channels = config.archi.n_colors * config.data.burst_size
     self.encoder1 = BasicBlock(in_channels, features)
     self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
     self.encoder2 = BasicBlock(features, features * 2)

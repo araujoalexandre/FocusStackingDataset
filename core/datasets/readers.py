@@ -9,8 +9,8 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torchvision.transforms import Compose
 
-from core.datasets.datasets import DdDpCanonDataset, FocusDataset
-from core.datasets.synthetic_burst_generation import SyntheticBurst
+from core.datasets.datasets import FocusDataset
+from core.datasets.synthetic_burst_generation import SyntheticRaw
 
 
 def get_data_dir(data_dir, dataset_name):
@@ -48,28 +48,10 @@ class BaseReader:
                         batch_size=self.batch_size,
                         num_workers=self.num_workers,
                         # shuffle=self.is_training and not sampler,
-                        pin_memory=False,
+                        pin_memory=True,
                         prefetch_factor=self.prefetch_factor,
                         sampler=sampler)
     return loader, sampler
-
-
-
-class SimulatedBlurReader(BaseReader):
-
-  def __init__(self, config, batch_size, is_distributed, is_training):
-    super(SimulatedBlurReader, self).__init__(config, batch_size, is_distributed, is_training)
-    self.dataset_name = 'simulated_blur'
-    if self.is_training:
-      n_patches_by_images = (1092 // config.data.crop_sz) * (728 // config.data.crop_sz)
-    else:
-      n_patches_by_images = 1
-    self.n_train_files = 350 * n_patches_by_images
-    self.n_test_files = 75 * n_patches_by_images
-    self.path = get_data_dir(config.project.data_dir, 'dd_dp_dataset_canon')
-    split = 'train' if self.is_training else 'val'
-    self.dataset = SyntheticBurst(
-      DdDpCanonDataset(self.path, split=split), config)
 
 
 class FocusStackReader(BaseReader):
@@ -79,14 +61,18 @@ class FocusStackReader(BaseReader):
     self.dataset_name = 'focus_stack'
     self.path = get_data_dir(config.project.data_dir, 'focus_stack_dataset')
     split = 'train' if self.is_training else 'test'
-    self.dataset = FocusDataset(self.path, split=split)
+    if config.data.convert_to_raw:
+      self.dataset = SyntheticRaw(
+        FocusDataset(config, self.path, split=split), config
+      )
+    else:
+      self.dataset = FocusDataset(config, self.path, split=split)
     n_patches_by_images = (5184 // 128) * (3888 // 128)
     self.n_train_files = self.dataset.n_train_files * n_patches_by_images
     self.n_test_files = self.dataset.n_test_files * n_patches_by_images
 
 
 readers_config  = {
-  'simulated_blur': SimulatedBlurReader,
-  'focus': FocusStackReader
+  'focus_stack_dataset': FocusStackReader
 }
 

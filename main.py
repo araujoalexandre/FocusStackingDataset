@@ -105,17 +105,14 @@ if __name__ == '__main__':
                               help="Name of the training directory.")
   parser_project.add_argument("--data_dir", type=str,
                               help="Name of the data directory.")
-  parser_project.add_argument("--dataset", type=str,  default='focus',
-                              help="Datasets to use (chain multiple datasets with comma)")
+  parser_project.add_argument("--dataset", type=str, default='focus_stack_dataset')
+  parser_project.add_argument("--dataset_id", type=str, default='3') # 3  = JPG / '_raw' = RAW
   parser_project.add_argument("--seed", type=int,
                               help="Make the training deterministic.")
   parser_project.add_argument("--logging_verbosity", type=str, default='INFO',
                               help="Choose the level of verbosity of the logs")
-  parser_project.add_argument("--autocast", action='store_true',
+  parser_project.add_argument("--autocast", type=eval, default=True,
                               help="Enable mix precision training.")
-  parser_project.add_argument("--no-autocast", dest='autocast', action='store_false',
-                              help="Disable mix precision training.")
-  parser_project.set_defaults(autocast=False)
   
   # parameters training
   parser_training = parser.add_argument_group("training", "Training parameters")
@@ -144,17 +141,18 @@ if __name__ == '__main__':
   
   # parameters eval
   parser_eval = parser.add_argument_group("eval", "Evaluation parameters")
-  parser_eval.add_argument("--eval_data_dir", type=str, 
-                           default="/gpfswork/rech/yxj/uuc79vj/data/focus_stack_dataset/dataset/train/lumix_lens")
+  parser_eval.add_argument("--dataset_split", type=str, default='train', choices=['train', 'test', 'others'])
+  parser_eval.add_argument("--dataset_lens", type=str, default='lumix_lens',
+                           choices=['lumix_lens', 'olympus_macro_lens', ''])
   parser_eval.add_argument("--prediction_folder", type=str, default="./imsave")
-  parser_eval.add_argument("--image_type", type=str, choices=['raw', 'jpg'])
-  parser_eval.add_argument("--image_scaling", type=float, default=0.5)
+  parser_eval.add_argument("--image_type", type=str, choices=['raw', 'jpg', 'aligned', ''])
+  parser_eval.add_argument("--image_scaling", type=float, default=1)
   parser_eval.add_argument("--burst_name", type=str, default="all")
-  parser_eval.add_argument("--eval_batch_size", type=int, default=4, help="The batch size to use for eval.")
+  parser_eval.add_argument("--eval_batch_size", type=int, default=32, help="The batch size to use for eval.")
   parser_eval.add_argument("--patch_size", type=int, default=256, help="size of the tile")
-  parser_eval.add_argument("--crop", type=int, default=64, help="number of pixels to discard on the tiles edge")
-  parser_eval.add_argument("--stride", type=int, default=None,
-                           help="stride size for overlaping windows, default is window size (minus crops on edges)")
+  # parser_eval.add_argument("--crop", type=int, default=64, help="number of pixels to discard on the tiles edge")
+  # parser_eval.add_argument("--stride", type=int, default=None,
+  #                          help="stride size for overlaping windows, default is window size (minus crops on edges)")
   parser_eval.add_argument('--align', action='store_true')
   parser_eval.add_argument('--eval_by_patch', action='store_true')
   # optical flow parameters
@@ -167,8 +165,6 @@ if __name__ == '__main__':
                            help="Size of crop to use for data generation.")
   parser_data.add_argument("--burst_size", type=int, default=30,
                            help="Size of the burst to use for data generation.")
-  parser_data.add_argument("--random_burst", action="store_true",
-                           help="Randomized burst order")
   parser_data.add_argument("--max_translation", type=float, default=0.,
                            help='Max translation to use during Synthetic Burst Generation.')
   parser_data.add_argument('--max_rotation', type=float, default=0.,
@@ -181,12 +177,15 @@ if __name__ == '__main__':
                            help='Border crop to use during Synthetic Burst Generation.')
   parser_data.add_argument("--downsample_factor", type=int, default=1,
                            help="For factor > 1, train for superresolution")
+  parser_data.add_argument("--overfit", type=str, default=None)
+  parser_data.add_argument("--convert-to-raw", action='store_true', default=False)
+  parser_data.add_argument("--add_noise", action='store_true')
   
   # parameters of the model architecture
   parser_archi = parser.add_argument_group("archi", "Model architecture parameters.")
   parser_archi.add_argument("--model", type=str)
-  parser_archi.add_argument("--n_channels", type=int, default=8)
-  parser_archi.add_argument("--fusion", type=str, default="non_local",
+  parser_archi.add_argument("--n_channels", type=int, default=64)
+  parser_archi.add_argument("--fusion", type=str, default="conv",
                             help="Define the fusion block")
   parser_archi.add_argument("--n_feats", type=int, default=64,
                             help='number of feature maps')
@@ -194,11 +193,10 @@ if __name__ == '__main__':
                             help='number of residual blocks')
   parser_archi.add_argument("--n_resgroups", type=int, default=5,
                             help='number of residual groups')
-  parser_archi.add_argument("--lrcn", action='store_true',
+  parser_archi.add_argument("--lrcn", type=eval, default=True,
                             help='use long-range concatenating network')
   parser_archi.add_argument("--n_colors", type=int, default=3,
                             help='number of color channels to use')
-  parser_archi.add_argument("--shuffle_channels", action='store_true')
   
   # parse all arguments and define config object
   args = parser.parse_args()
@@ -206,11 +204,18 @@ if __name__ == '__main__':
   for group in parser._action_groups:
     group_dict={a.dest:getattr(args,a.dest,None) for a in group._group_actions}
     arg_groups[group.title] = argparse.Namespace(**group_dict)
-  
+ 
   # create config object
   config = Config(**arg_groups)
   config.cmd = f"python3 {' '.join(sys.argv)}"
-  
+
+  if config.project.mode == 'eval':
+    if config.project.dataset == 'focus_stack_dataset':
+      data_dir = "/gpfsscratch/rech/yxj/uuc79vj/data/focus_stack_dataset/dataset/"
+      config.eval.eval_data_dir = join(data_dir, config.eval.dataset_split, config.eval.dataset_lens)
+    else:
+      config.eval.eval_data_dir = f'/gpfsscratch/rech/yxj/uuc79vj/data/{config.project.dataset}'
+
   # cluster constraint
   if config.cluster.constraint and config.cluster.partition != 'gpu_p5':
     config.cluster.constraint = f"v100-{args.constraint}g"
@@ -239,13 +244,7 @@ if __name__ == '__main__':
     config.project.train_dir = f'{path}/{config.project.train_dir}'
     if not exists(config.project.train_dir):
       ValueError('The train directory cannot be found.')
-
-  if config.project.mode == "eval":
-    train_folder = basename(config.project.train_dir)
-    config.eval.prediction_folder = join(
-      realpath(config.eval.prediction_folder), train_folder)
-    makedirs(config.eval.prediction_folder, exist_ok=True)
-  
+ 
   # create the folder for the training
   if config.project.mode == 'train' and config.project.train_dir is None:
     config.training.start_new_model = True
@@ -260,14 +259,19 @@ if __name__ == '__main__':
   elif config.project.mode == 'train' and config.project.train_dir is not None:
     config.training.start_new_model = False
     assert exists(config.project.train_dir)
-  elif config.project.mode == 'eval' and config.project.train_dir is None:
-    ValueError('The train directory must be provided.')
 
-  # if config exist load saved config
-  # load only the project parameters and the architecture
-  # config.load()
-  # if config does not exist save it
-  config.save()
+  if config.project.mode == "eval":
+    if config.project.train_dir is None:
+      ValueError('The train directory must be provided.')
+    train_folder = basename(config.project.train_dir)
+    if config.project.dataset == 'focus_stack_dataset':
+      config.eval.prediction_folder = join(
+        realpath(config.eval.prediction_folder), train_folder, 
+        'focus_stack_dataset', config.eval.dataset_split, config.eval.dataset_lens)
+    else:
+      config.eval.prediction_folder = join(
+        realpath(config.eval.prediction_folder), train_folder, config.project.dataset)
+    makedirs(config.eval.prediction_folder, exist_ok=True)
 
   main(config)
 

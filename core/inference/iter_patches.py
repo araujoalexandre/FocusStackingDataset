@@ -3,80 +3,104 @@ import logging
 import numpy as np
 import torch
 import torch.nn.functional as F
-from core.inference.im2col import Im2Col, Col2Im
+from core.inference.flow import calcFlow
+from core.utils import flatten_raw_image
+from core.data_utils import postprocess_raw
 
 
 class IterPatchesImage:
 
-  def __init__(self, burst, flows, config, center_pad=False, avg=True, pad_mode='constant'):
+  def __init__(self, burst, meta_info, config, optical_flows=True):
 
-    self.burst = burst
-    self.flows = flows
+    if optical_flows:
+      logging.info(f'Computing optical flow ...')
+      if config.eval.image_type == 'raw':
+        burst_rgb = postprocess_raw(burst, meta_info, linearize=False, demosaic=True,
+                                    wb=True, ccm=False, brightness=True,
+                                    gamma=True, tonemap=True)
+      else:
+        burst_rgb = burst
+      self.flows, _ = calcFlow(burst_rgb, D=config.eval.of_scale, poly_n=7,
+                               poly_sigma=1.5, interpolate=False, winsize=config.eval.of_win)
+    else:
+      self.flows = torch.zeros_like(burst)
 
-    self.n_channels = self.burst.shape[1]
+    if config.eval.image_type == 'raw':
+      burst = flatten_raw_image(burst)
+    logging.info(f'burst shape after flatten: {burst.shape}')
 
+    self.burst, self.original_padding = self.padding(burst, config.eval.patch_size, 'replicate')
+    self.flows, _ = self.padding(self.flows, config.eval.patch_size, 'constant')
+    
+    self.burst_size = self.burst.shape
+    self.in_channels = config.archi.n_colors
+    # self.in_channels = 4
+    self.out_channels = 3 # we always output rgb images
+    self.output_size = burst.shape[2:]
     self.batch_size = config.eval.eval_batch_size
-    self.crop_size = config.eval.crop // 4 * 4 # force even crop factor to keep the correct rggb pattern
-    self.block_size = config.eval.patch_size
-    stride = config.eval.stride
-    if config.eval.stride is None:
-      stride = config.eval.patch_size
-    self.upscale = config.data.downsample_factor
-    self.block_stride = stride - 2 * self.crop_size // self.upscale
-    self.center_pad = center_pad
-    self.avg = avg
-    self.pad_mode = pad_mode
-
     self.of_scale = config.eval.of_scale
+    self.upscale = config.data.downsample_factor
+    self.block_stride = 32
+    self.last_padding = 16
+
+    self.block_size_in = config.eval.patch_size + self.last_padding * 2
+    self.block_size_out = config.eval.patch_size
 
     self.blocks_coord = self.get_coord_blocks(self.burst)
 
-    # batch, n_blocks, channels, hb, wb = blocks.shape
     self.n_blocks = self.blocks_coord[0].shape[1]
-    patch_size = self.block_size * self.upscale - 2 * self.crop_size
-    self.batch_out_blocks = torch.zeros(self.n_blocks, self.n_channels, patch_size, patch_size)
+    self.batch_out_blocks = torch.zeros(
+      self.n_blocks, self.out_channels, self.block_size_out, self.block_size_out)
 
     self.all_indexes = list(range(0, self.n_blocks, self.batch_size))
+    logging.info(f'all_indexes, {len(self.all_indexes)}')
 
-  def shape_pad_even(self, tensor_shape, patch, stride):
-    assert len(tensor_shape) == 4
-    b, c, h, w = tensor_shape
-    required_pad_h = (patch - (h - patch) % stride) % patch
-    required_pad_w = (patch - (w - patch) % stride) % patch
-    return required_pad_h, required_pad_w
+  def padding(self, x, factor, pad_mode):
+    expand_x = np.int32(2**np.ceil(np.log2(x.shape[-2])) - x.shape[-2])
+    expand_y = np.int32(2**np.ceil(np.log2(x.shape[-1])) - x.shape[-1])
+    padding = (0, expand_y, 0, expand_x)
+    x = F.pad(x, padding, mode=pad_mode)
+    return x, padding
+  
+  def remove_padding(self, x):
+    padding = self.original_padding
+    return x[:, :, :-padding[3] or None, :-padding[1] or None]
+    
+  def im2col(self, x):
+    batch = x.shape[0]
+    out = F.unfold(x, kernel_size=self.block_size_in, stride=self.block_stride, padding=0, dilation=1)
+    return out
+
+  def col2im(self, x):
+    output_size = np.array(self.burst_size[2:]) - 2 * self.last_padding
+    kernel_size = self.block_size_out * self.upscale
+    stride = self.block_stride * self.upscale
+    fold_params = dict(output_size=output_size, kernel_size=kernel_size,
+                 stride=stride, padding=0, dilation=1)
+    out = F.fold(x, **fold_params)
+    mean = F.fold(torch.ones_like(x), **fold_params)    
+    out = out / mean
+    return out
 
   def make_blocks(self, image):
     """
-    :param image: (1,C,H,W)
-    :return: raw block (batch,C,block_size,block_size), tulple shape augmented image
+    :param image: (1, C, H, W)
+    :return: raw block (batch, C, block_size, block_size), tulple shape augmented image
     """
-    pad_even = self.shape_pad_even(image.shape, self.block_size, self.block_stride)
-    pad_h, pad_w =  pad_even
-
-    if self.center_pad:
-      pad_ = (pad_w // 2, pad_w - pad_w // 2, pad_h // 2, pad_h - pad_h // 2)
-    else:
-      pad_ = (0, pad_w, 0, pad_h)
-    self.pad = pad_
-
-    # add half kernel cause block edges are dumped
-    image_padded_even = F.pad(image, self.pad, mode=self.pad_mode)
-    self.padded_shape = image_padded_even.shape
-    batch_blocks = Im2Col(image_padded_even,
-                          kernel_size=self.block_size, stride=self.block_stride, padding=0)
+    batch_blocks = self.im2col(image)
     batch_blocks = batch_blocks.permute(0, 2, 1)
-    batch_blocks = batch_blocks.view(1, -1, self.n_channels, self.block_size, self.block_size)
+    batch_blocks = batch_blocks.reshape(1, -1, 3, self.block_size_in, self.block_size_in)
     return batch_blocks
 
-  def get_coord_blocks(self,image):
-    b,c,h,w = image.shape
+  def get_coord_blocks(self, image):
+    batch_size, n_channels, h, w = image.shape
     x = torch.arange(0, h)
     y = torch.arange(0, w)
-    xx, yy = torch.meshgrid(x, y)
+    xx, yy = torch.meshgrid(x, y, indexing='ij')
     img_coord = torch.stack((xx, yy, yy)).unsqueeze(0).float()
     tiles = self.make_blocks(img_coord)
     coord_upleft = tiles[..., :-1, 0, 0]
-    coord_downright = coord_upleft + self.block_size
+    coord_downright = coord_upleft + self.block_size_in
     return coord_upleft, coord_downright
 
   def extract_patch(self, i):
@@ -87,8 +111,10 @@ class IterPatchesImage:
     h, w = down - up
 
     # get crop on each frame corrected with optical flow
-    scale = self.of_scale
-    xf, yf, hf, wf = x // scale, y // scale, h // scale, w // scale
+    xf = torch.div(x, self.of_scale, rounding_mode='floor')
+    yf = torch.div(y, self.of_scale, rounding_mode='floor')
+    hf = torch.div(h, self.of_scale, rounding_mode='floor')
+    wf = torch.div(w, self.of_scale, rounding_mode='floor')
     self.flow_crop = self.flows[:, :, xf:xf+hf, yf:yf+wf]
 
     # take mean optical on patch and round by 2 for exact interpolation
@@ -98,9 +124,10 @@ class IterPatchesImage:
 
     # patch idx corrected w offset for each frame
     x_offset, y_offset = x + offset[:, 1], y + offset[:, 0]  
+    x_offset, y_offset = torch.relu(x_offset), torch.relu(y_offset)
 
     # extract coarsly aligned patch on each frame
-    burst = torch.zeros(self.burst.shape[0], 3, self.block_size, self.block_size)
+    burst = torch.zeros(self.burst.shape[0], self.in_channels, self.block_size_in, self.block_size_in)
     for j, (xc, yc) in enumerate(zip(x_offset, y_offset)):
       crops = self.burst[j, :, xc:xc + h, yc:yc + w]
       burst[j, :, :crops.shape[-2], :crops.shape[-1]] = crops
@@ -123,35 +150,22 @@ class IterPatchesImage:
     raise StopIteration
 
   def add_processed_patches(self, batch_patches):
-    crop = self.crop_size
-    batch_patches = batch_patches[:, :, crop:-crop or None, crop:-crop or None]
     start = self.indexes[0]
-    self.batch_out_blocks[start:start+self.batch_size, ...] = batch_patches
+    p = self.last_padding
+    batch_patches_cropped = batch_patches[..., p:-p, p:-p]
+    self.batch_out_blocks[start:start+self.batch_size, ...] = batch_patches_cropped
 
   def agregate_blocks(self):
     """
     :param blocks: processed blocks
     :return: image of averaged estimates
     """
-    h_pad, w_pad = self.padded_shape[2:]
-
-    pad = self.pad
-    pad = tuple(i * self.upscale for i in pad)
-
-    batch_out_blocks_flatten = self.batch_out_blocks.contiguous().view(
-      1, -1, self.n_channels * (self.block_size*self.upscale-2*self.crop_size)**2)
+    n_blocks, out_channels, block_size_out, block_size_out = self.batch_out_blocks.shape
+    batch_out_blocks_flatten = self.batch_out_blocks.reshape(
+      1, n_blocks, out_channels * (block_size_out * self.upscale)**2)
     batch_out_blocks_flatten = batch_out_blocks_flatten.permute(0, 2, 1)
-
-    output_size = (h_pad*self.upscale-2*self.crop_size, w_pad*self.upscale-2*self.crop_size)
-    output_padded = Col2Im(batch_out_blocks_flatten,
-                           output_size=output_size,
-                           kernel_size=self.block_size*self.upscale-2*self.crop_size,
-                           stride=self.block_stride * self.upscale,
-                           padding=0,
-                           avg=self.avg)
-
-    output = output_padded[:, :, pad[2]:-pad[3] or None, pad[0]:-pad[1] or None]
-    return output
+    output = self.col2im(batch_out_blocks_flatten)
+    return self.remove_padding(output)
 
 
 

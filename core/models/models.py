@@ -115,5 +115,24 @@ class MultiResolutionFusion(nn.Module):
     return x
 
 
+class FusionNonLinearWeightedAverageModel(nn.Module):
 
+  def __init__(self, config):
+    super(FusionNonLinearWeightedAverageModel, self).__init__()
+    channels = 3
+    burst_size = config.data.burst_size
+    crop_size = config.data.crop_sz
+    self.conv1 = nn.Conv3d(burst_size, burst_size, kernel_size=channels, padding=channels//2, bias=True)
+    self.conv2 = nn.Conv3d(burst_size, burst_size, kernel_size=channels, padding=channels//2, bias=True)
+    self.conv3 = nn.Conv3d(burst_size, burst_size, kernel_size=channels, padding=channels//2, bias=True)
+    self.avg_weights = nn.Parameter(torch.randn(burst_size, 1, crop_size, crop_size), requires_grad=True)
+    self.relu = nn.ReLU()
+
+  def forward(self, x):
+    x = self.relu(self.conv1(x))
+    x = self.relu(self.conv2(x))
+    x = self.relu(self.conv3(x))
+    x = x * torch.softmax(self.avg_weights, dim=0)
+    x = x.sum(1)
+    return x
 

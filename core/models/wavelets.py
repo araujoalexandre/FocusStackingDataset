@@ -4,13 +4,15 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.transforms as T
 
 
-class ComplexDaubechiesWaveletsV2(nn.Module):
+class ComplexDaubechiesWavelets(nn.Module):
 
   def __init__(self, config):
-    super(ComplexDaubechiesWaveletsV2, self).__init__()
+    super(ComplexDaubechiesWavelets, self).__init__()
 
+    self.config = config
     self.levels = 6
 
     self.lo_pass = torch.Tensor([
@@ -131,24 +133,20 @@ class ComplexDaubechiesWaveletsV2(nn.Module):
     result = result.reshape(batch_size, burst_size, n_channels, 2, height, width)
     return result
 
-  def merge_wavelets(self, wavelets): 
-    abs_wavelets = (wavelets**2).sum(axis=3)
-    n, b, c, h, w = abs_wavelets.shape
+  def merge_wavelets(self, wavelets):
+    wavelets = wavelets.permute(0, 1, 2, 4, 5, 3).contiguous()
+    wavelets = torch.view_as_complex(wavelets)
+    abs_wavelets = wavelets.abs()
+    batch_size, burst_size, channels, h, w = abs_wavelets.shape
     depthmap = abs_wavelets.argmax(axis=1)
-    # n, b, c, 2, h, w -> n, b, 2, c, h, w
-    wavelets = wavelets.permute(0, 1, 3, 2, 4, 5)
-    # n, b, 2, c, h, w -> b, 2, n, c, h, w
-    wavelets = wavelets.permute(1, 2, 0, 3, 4, 5)    
-    wavelets = wavelets.reshape(b, 2, -1)
-    indexes = range(n * c * w * h)
-    merged = torch.cat((
-      wavelets[:, 0, :][depthmap.flatten(), indexes].reshape(1, n, c, h, w),
-      wavelets[:, 1, :][depthmap.flatten(), indexes].reshape(1, n, c, h, w)
-    ), dim=0)
-    # 2, n, c, h, w -> n, 2, c, h, w
-    merged = merged.permute(1, 0, 2, 3, 4)
-    # n, 2, c, h, w -> n, c, 2, h, w    
-    merged = merged.permute(0, 2, 1, 3, 4)
+    # batch_size, burst_size, channels, h, w -> burst_size, batch_size, channels, h, w
+    wavelets = wavelets.permute(1, 0, 2, 3, 4)    
+    wavelets = wavelets.reshape(burst_size, -1)
+    indexes = range(batch_size * channels * h * w)
+    merged = wavelets[depthmap.flatten(), indexes].reshape(batch_size, channels, h, w)
+    merged = torch.view_as_real(merged)
+    # n, c, h, w, 2 -> n, c, 2, h, w
+    merged = merged.permute(0, 1, 4, 2, 3)
     return merged
 
   def inverse_wavelets(self, wavelets):
@@ -165,7 +163,7 @@ class ComplexDaubechiesWaveletsV2(nn.Module):
       result[:, :, :, 0:h, 0:w] = self._compose(srcarea, lo_pass, hi_pass)
       wavelets[:, :, :, 0:h, 0:w] = result[:, :, :, 0:h, 0:w]
     result = result[:, :, 0, :, :]
-    result = result.clamp(0, 1)
+    result = result.clamp(0, 1.)
     return result
 
   def forward(self, x):

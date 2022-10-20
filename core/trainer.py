@@ -242,14 +242,7 @@ class Trainer:
 
     batch_start_time = time.time()
     burst, frame_gt = data
-    if step == 0:
-      torch.save(burst, './burst.pt')
-      torch.save(frame_gt, './frame_gt.pt')
-
-    burst = burst.cuda(non_blocking=True)
-    frame_gt = frame_gt.cuda(non_blocking=True)
-    if self.config.archi.n_colors == 1:
-      frame_gt = frame_gt.mean(2)
+    burst, frame_gt = burst.cuda(), frame_gt.cuda()
 
     if step == 0 and self.local_rank == 0:
       logging.info(f'burst {burst.shape}')

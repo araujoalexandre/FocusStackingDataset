@@ -1,3 +1,4 @@
+import logging
 import functools
 import torch
 import torch.nn as nn
@@ -7,7 +8,9 @@ from torch.cuda.amp import autocast
 from core.models.non_local.non_local_cross_dot_product import NONLocalBlock2D as NonLocalCross
 from core.models.non_local.non_local_dot_product import NONLocalBlock2D as NonLocal
 
-from dcn_v2 import DCN_sep as DCN
+# from dcn_v2 import DCN_sep as DCN
+from torchvision.ops import DeformConv2d
+
 
 
 def make_layer(block, n_layers, idx=False):
@@ -137,24 +140,35 @@ class PCD_Align(nn.Module):
     super(PCD_Align, self).__init__()
     # L3: level 3, 1/4 spatial size
     self.L3_offset_conv1 = wn(nn.Conv2d(nf * 2, nf, 3, 1, 1, bias=True))  # concat for diff
-    self.L3_offset_conv2 = wn(nn.Conv2d(nf, nf, 3, 1, 1, bias=True))
-    self.L3_dcnpack = DCN(nf, nf, 3, stride=1, padding=1, dilation=1, deformable_groups=groups)
+    # self.L3_offset_conv2 = wn(nn.Conv2d(nf, nf, 3, 1, 1, bias=True))
+    self.L3_offset_conv2 = wn(nn.Conv2d(nf, 2*groups*3*3, 3, 1, 1, bias=True))
+    # self.L3_dcnpack = DCN(nf, nf, 3, stride=1, padding=1, dilation=1, deformable_groups=groups)
+    self.L3_dcnpack = DeformConv2d(nf, nf, 3, stride=1, padding=1, dilation=1, groups=groups)
+
     # L2: level 2, 1/2 spatial size
     self.L2_offset_conv1 = wn(nn.Conv2d(nf * 2, nf, 3, 1, 1, bias=True))  # concat for diff
-    self.L2_offset_conv2 = wn(nn.Conv2d(nf * 2, nf, 3, 1, 1, bias=True))  # concat for offset
-    self.L2_offset_conv3 = wn(nn.Conv2d(nf, nf, 3, 1, 1, bias=True))
-    self.L2_dcnpack = DCN(nf, nf, 3, stride=1, padding=1, dilation=1, deformable_groups=groups)
+    self.L2_offset_conv2 = wn(nn.Conv2d(nf + 2*groups*3*3, nf, 3, 1, 1, bias=True))  # concat for offset
+    # self.L2_offset_conv3 = wn(nn.Conv2d(nf, nf, 3, 1, 1, bias=True))
+    self.L2_offset_conv3 = wn(nn.Conv2d(nf, 2*groups*3*3, 3, 1, 1, bias=True))
+    # self.L2_dcnpack = DCN(nf, nf, 3, stride=1, padding=1, dilation=1, deformable_groups=groups)
+    self.L2_dcnpack = DeformConv2d(nf, nf, 3, stride=1, padding=1, dilation=1, groups=groups)
     self.L2_fea_conv = wn(nn.Conv2d(nf * 2, nf, 3, 1, 1, bias=True))  # concat for fea
+
     # L1: level 1, original spatial size
     self.L1_offset_conv1 = wn(nn.Conv2d(nf * 2, nf, 3, 1, 1, bias=True))  # concat for diff
-    self.L1_offset_conv2 = wn(nn.Conv2d(nf * 2, nf, 3, 1, 1, bias=True))  # concat for offset
-    self.L1_offset_conv3 = wn(nn.Conv2d(nf, nf, 3, 1, 1, bias=True))
-    self.L1_dcnpack = DCN(nf, nf, 3, stride=1, padding=1, dilation=1, deformable_groups=groups)
+    self.L1_offset_conv2 = wn(nn.Conv2d(nf + 2*groups*3*3, nf, 3, 1, 1, bias=True))  # concat for offset
+    # self.L1_offset_conv3 = wn(nn.Conv2d(nf, nf, 3, 1, 1, bias=True))
+    self.L1_offset_conv3 = wn(nn.Conv2d(nf, 2*groups*3*3, 3, 1, 1, bias=True))
+    # self.L1_dcnpack = DCN(nf, nf, 3, stride=1, padding=1, dilation=1, deformable_groups=groups)
+    self.L1_dcnpack = DeformConv2d(nf, nf, 3, stride=1, padding=1, dilation=1, groups=groups)
     self.L1_fea_conv = wn(nn.Conv2d(nf * 2, nf, 3, 1, 1, bias=True))  # concat for fea
+
     # Cascading DCN
     self.cas_offset_conv1 = wn(nn.Conv2d(nf * 2, nf, 3, 1, 1, bias=True))  # concat for diff
-    self.cas_offset_conv2 = wn(nn.Conv2d(nf, nf, 3, 1, 1, bias=True))
-    self.cas_dcnpack = DCN(nf, nf, 3, stride=1, padding=1, dilation=1, deformable_groups=groups)
+    # self.cas_offset_conv2 = wn(nn.Conv2d(nf, nf, 3, 1, 1, bias=True))
+    self.cas_offset_conv2 = wn(nn.Conv2d(nf, 2*groups*3*3, 3, 1, 1, bias=True))
+    # self.cas_dcnpack = DCN(nf, nf, 3, stride=1, padding=1, dilation=1, deformable_groups=groups)
+    self.cas_dcnpack = DeformConv2d(nf, nf, 3, stride=1, padding=1, dilation=1, groups=groups)
 
     self.lrelu = nn.LeakyReLU(negative_slope=0.1, inplace=True)
 

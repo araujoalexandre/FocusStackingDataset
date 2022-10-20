@@ -1,4 +1,5 @@
 import os
+import glob
 import logging
 import torch
 import numpy as np
@@ -8,7 +9,7 @@ from natsort import natsorted
 from os.path import join
 
 import core.datasets.camera_pipeline as camera
-from core.utils import torch_to_npimage, npimage_to_torch
+from core.utils import torch_to_npimage, npimage_to_torch, flatten_raw_image
 
 
 def demosaic_bilinear(image):
@@ -45,20 +46,20 @@ def demosaic_bilinear(image):
 def unpack(rggb):
   b, c, h, w = rggb.shape
   raw = torch.zeros((b, 1, h * 2, w * 2)).to(rggb.device)
-  raw[:, 0, ::2, ::2] = rggb[:, 0, :, :]
-  raw[:, 0, ::2, 1::2] = rggb[:, 1, :, :]
-  raw[:, 0, 1::2, ::2] = rggb[:, 2, :, :]
+  raw[:, 0, 0::2, 0::2] = rggb[:, 0, :, :]
+  raw[:, 0, 0::2, 1::2] = rggb[:, 1, :, :]
+  raw[:, 0, 1::2, 0::2] = rggb[:, 2, :, :]
   raw[:, 0, 1::2, 1::2] = rggb[:, 3, :, :]
   return raw
 
-def pack(raw):
-  b, c, h, w = raw.shape
-  rggb = torch.zeros((b, 4, h // 2, w // 2)).to(raw.device)
-  rggb[:, 0, :, :] = raw[:, 0, ::2, ::2]
-  rggb[:, 1, :, :] = raw[:, 0, ::2, 1::2]
-  rggb[:, 2, :, :] = raw[:, 0, 1::2, ::2]
-  rggb[:, 3, :, :] = raw[:, 0, 1::2, 1::2]
-  return rggb
+# def pack(raw):
+#   b, c, h, w = raw.shape
+#   rggb = torch.zeros((b, 4, h // 2, w // 2)).to(raw.device)
+#   rggb[:, 0, :, :] = raw[:, 0, ::2, ::2]
+#   rggb[:, 1, :, :] = raw[:, 0, ::2, 1::2]
+#   rggb[:, 2, :, :] = raw[:, 0, 1::2, ::2]
+#   rggb[:, 3, :, :] = raw[:, 0, 1::2, 1::2]
+#   return rggb
 
 def get_cam2rgb(xyz2cam):
   """Generates random RGB -> Camera color correction matrices."""
@@ -84,16 +85,7 @@ def rollPattern(raw, visible=True):
     rolledImraw = raw.raw_image[rx:-rx, ry:-ry]
   else:
     rolledImraw = raw.raw_image_visible[rx:-rx or None, ry:-ry or None] # does not include margin
-  return rolledImraw
-
-def getColorDestIdx(raw):
-  if raw.color_desc == b'RGBG':
-    idx = [0, 1, 3, 2]
-  elif raw.color_desc == b'RGGB':
-    idx = [0, 1, 2, 3]
-  else:
-    raise NotImplementedError('unknown color desc pattern raw file')
-  return idx
+  return rolledImraw[8:3896, 8:5192]
 
 def pack_raw_image(im_raw):
   if isinstance(im_raw, np.ndarray):
@@ -108,18 +100,15 @@ def pack_raw_image(im_raw):
   im_out[3, :, :] = im_raw[1::2, 1::2]
   return im_out
 
-def flatten_raw_image(im_raw_4ch):
-  if isinstance(im_raw_4ch, np.ndarray):
-    im_out = np.zeros_like(im_raw_4ch, shape=(im_raw_4ch.shape[1] * 2, im_raw_4ch.shape[2] * 2))
-  elif isinstance(im_raw_4ch, torch.Tensor):
-    im_out = torch.zeros((im_raw_4ch.shape[1] * 2, im_raw_4ch.shape[2] * 2), dtype=im_raw_4ch.dtype)
+def getColorDestIdx(raw):
+  if raw.color_desc == b'RGBG':
+    idx = [0, 1, 3, 2]
+  elif raw.color_desc == b'RGGB':
+    idx = [0, 1, 2, 3]
   else:
-    raise Exception
-  im_out[0::2, 0::2] = im_raw_4ch[0, :, :]
-  im_out[0::2, 1::2] = im_raw_4ch[1, :, :]
-  im_out[1::2, 0::2] = im_raw_4ch[2, :, :]
-  im_out[1::2, 1::2] = im_raw_4ch[3, :, :]
-  return im_out
+    raise NotImplementedError('unknown color desc pattern raw file')
+  return idx
+
 
 def load_raw_image(path, scaling, visible=True):
   # raw_value_visible
@@ -127,7 +116,7 @@ def load_raw_image(path, scaling, visible=True):
   im_raw = rollPattern(raw, visible=visible)
   im_raw = pack_raw_image(im_raw).astype(np.int16) # convert to rggb 4 channels
   im_raw = im_raw.transpose(1, 2, 0)
-  if scaling:
+  if scaling < 1:
     im_raw = cv2.resize(im_raw, None, None, scaling, scaling, cv2.INTER_AREA)
   im_raw = im_raw.transpose(2, 0, 1)
   im_raw = torch.from_numpy(im_raw)
@@ -151,7 +140,7 @@ def load_raw_image(path, scaling, visible=True):
 def load_jpg_image(path, scaling):
   image = cv2.imread(path)
   image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-  if scaling:
+  if scaling < 1:
     image = cv2.resize(image, None, None, scaling, scaling, cv2.INTER_AREA)
   image = torch.FloatTensor(image)
   image = image.permute(2, 0, 1)
@@ -160,22 +149,27 @@ def load_jpg_image(path, scaling):
   return image, None
 
 class Burst:
-  """ Real-world burst super-resolution dataset. """
 
-  def __init__(self, root, burst_size, image_type, scaling):
-    self.root = root
+  def __init__(self, data_dir, burst_name, burst_size, image_type, scaling):
+    path = join(data_dir, burst_name, image_type)
     self.burst_size = burst_size
     self.image_type = image_type
     self.scaling = scaling
     self.visible = True
-    self.files_list = self.get_files_list(root, burst_size)
+    self.files_list = self.get_files_list(path, burst_size)
+    if len(self.files_list) < self.burst_size:
+      self.files_list = self.expand_list(self.files_list)
 
-  def get_files_list(self, root, burst_size):
-    burst_list = natsorted(os.listdir(f'{root}/{self.image_type}'))
+  def expand_list(self, files_list):
+    expand_factor = self.burst_size // len(files_list)
+    files_new = [[files_list[i]] * expand_factor for i in range(len(files_list))]
+    files_new = [x for sublist in files_new for x in sublist]
+    return files_new
+
+  def get_files_list(self, path, burst_size):
+    burst_list = natsorted(glob.glob(f'{path}/*'))
     if len(burst_list) > burst_size:
       burst_list = burst_list[::int(len(burst_list)//burst_size)][:burst_size]
-    # logging.info(f'burst_list: {burst_list}')
-    burst_list = [join(root, self.image_type, l) for l in burst_list]
     return burst_list
 
   def get_burst(self):
@@ -183,16 +177,14 @@ class Burst:
     for path in self.files_list:
       if self.image_type == 'raw':
         image, meta_info = load_raw_image(path, self.scaling, self.visible)
-      elif self.image_type == 'jpg':
+      elif self.image_type in ['jpg', 'aligned', '']:
         image, meta_info = load_jpg_image(path, self.scaling)
       burst_image_data.append(image)
     burst = torch.cat(burst_image_data, 0).float()
-    logging.info(f'burst: {burst.shape}')
     if self.image_type == 'raw':
-      # convert raw burst to RGB burst
       burst = postprocess_raw(burst, meta_info,
-                              linearize=True, demosaic=True, wb=True, dwb=False,
-                              ccm=True, brightness=True, gamma=True, tonemap=True)
+                              linearize=True, demosaic=False, wb=False, dwb=False,
+                              ccm=False, brightness=False, gamma=False, tonemap=False)
     return burst, meta_info
 
 

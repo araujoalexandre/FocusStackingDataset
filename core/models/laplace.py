@@ -6,14 +6,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class LaplacianV2(nn.Module):
+class Laplacian(nn.Module):
 
   def __init__(self, config):
-    super(LaplacianV2, self).__init__()
-    self.colors = config.archi.n_colors == 3
+    super(Laplacian, self).__init__()
 
   def compute_laplacian(self, x):
-    batch_size,  burst_size, channels, h, w = x.shape
+    batch_size, burst_size, channels, h, w = x.shape
     x = x.reshape(batch_size*burst_size, channels, h, w)
     kernel_size, blur_size = 5, 5
     laplacians = []

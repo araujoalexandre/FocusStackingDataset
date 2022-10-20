@@ -80,44 +80,42 @@ def gamma_compression(image):
   # Clamps to prevent numerical instability of gradients near zero.
   return image.clamp(1e-8) ** (1.0 / 2.2)
 
-
 def apply_ccm(image, ccm):
   """Applies a color correction matrix."""
-  assert image.dim() == 3 and image.shape[0] == 3
-  if ccm.dim() == 3:
-    ccm = ccm[0]
+  if ccm.dim() == 3: ccm = ccm[0]
   shape = image.shape
-  image = image.view(3, -1)
-  ccm = ccm.to(image.device).type_as(image)
-  image = torch.mm(ccm, image)
-  return image.view(shape)
-
-
-def apply_gains(image, rgb_gain, red_gain, blue_gain):
-  """Inverts gains while safely handling saturated pixels."""
-  assert image.dim() == 3 and image.shape[0] in [3, 4]
-  if image.shape[0] == 3:
-      gains = torch.tensor([red_gain, 1.0, blue_gain]) * rgb_gain
-  else:
-      gains = torch.tensor([red_gain, 1.0, 1.0, blue_gain]) * rgb_gain
-  gains = gains.view(-1, 1, 1)
-  gains = gains.to(image.device).type_as(image)
-  return (image * gains).clamp(0.0, 1.0)
-
+  if image.dim() == 3:
+    assert image.shape[0] == 3
+    image = image.view(3, -1)
+    ccm = ccm.to(image.device).type_as(image)
+    image = torch.mm(ccm, image)
+    return image.view(shape)
+  elif image.dim() == 4:
+    assert image.shape[1] == 3
+    burst_size = shape[0]
+    image = image.view(burst_size, 3, -1)
+    image = image.permute(0, 2, 1)
+    ccm = ccm.to(image.device).type_as(image)
+    image = torch.matmul(image, ccm.T)
+    image = image.permute(0, 2, 1)
+    return image.view(shape)
 
 def safe_invert_gains(image, rgb_gain, red_gain, blue_gain):
   """Inverts gains while safely handling saturated pixels."""
-  assert image.dim() == 3 and image.shape[0] == 3
-
   gains = torch.tensor([1.0 / red_gain, 1.0, 1.0 / blue_gain]) / rgb_gain
   gains = gains.view(-1, 1, 1)
-
-  # Prevents dimming of saturated pixels by smoothly masking gains near white.
-  gray = image.mean(dim=0, keepdims=True)
   inflection = 0.9
-  mask = ((gray - inflection).clamp(0.0) / (1.0 - inflection)) ** 2.0
-
-  safe_gains = torch.max(mask + (1.0 - mask) * gains, gains)
+  if image.dim() == 3:
+    assert image.shape[0] == 3
+    # Prevents dimming of saturated pixels by smoothly masking gains near white.
+    gray = image.mean(dim=0, keepdims=True)
+    mask = ((gray - inflection).clamp(0.0) / (1.0 - inflection)) ** 2.0
+    safe_gains = torch.max(mask + (1.0 - mask) * gains, gains)
+  elif image.dim() == 4:
+    assert image.shape[1] == 3
+    gray = image.mean(dim=1, keepdims=True)
+    mask = ((gray - inflection).clamp(0.0) / (1.0 - inflection)) ** 2.0
+    safe_gains = torch.max(mask + (1.0 - mask) * gains, gains)
   return image * safe_gains
 
 

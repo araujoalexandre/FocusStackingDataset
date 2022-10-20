@@ -9,14 +9,13 @@ import shutil
 import glob
 import subprocess
 import cv2
-from os.path import join, basename
+from os.path import join, basename, exists
 
 from core import utils
 from core.models import models_config
 from core.datasets.readers import readers_config
 from core.inference.iter_patches import IterPatchesImage
-from core.inference.flow import calcFlow
-from core.inference.align_key_points import AlignImages
+from core.inference.align_key_points import align_burst
 from core.data_utils import Burst
 from core.datasets.readers import get_data_dir
 
@@ -28,6 +27,8 @@ import torch.backends.cudnn as cudnn
 from torch import nn
 from torch.distributed.elastic.multiprocessing.errors import record
 
+classic_models = ['wavelets', 'laplacian']
+
 
 class Evaluator:
 
@@ -38,30 +39,23 @@ class Evaluator:
   def load_state(self, ckpt_path=None):
     if ckpt_path is None:
       ckpt_path = join(
-        self.config.train_dir, "checkpoints", "best_model.ckpt.pth")
+        self.train_dir, "checkpoints", "best_model.ckpt.pth")
+      if not exists(ckpt_path):
+        checkpoints = glob.glob(join(self.train_dir, "checkpoints", "model.ckpt-*.pth"))
+        get_model_id = lambda x: int(x.strip('.pth').strip('model.ckpt-'))
+        ckpt_name = sorted([ckpt.split('/')[-1] for ckpt in checkpoints], key=get_model_id)[-1]
+        ckpt_path = join(self.train_dir, "checkpoints", ckpt_name)
     checkpoint = torch.load(ckpt_path)
     model_state = checkpoint['model_state_dict']
     self.model.load_state_dict(model_state)
 
-  def get_patches(self):
-    # compute optical flow
-    self.of_scale = self.config.eval.of_scale
-    self.of_win = self.config.eval.of_win
-    logging.info(f'Computing optical flow ...')
-    self.flows, _ = calcFlow(
-      self.burst, D=self.of_scale, poly_n=7, poly_sigma=1.5, interpolate=False, winsize=self.of_win)
-    # define the patch generator
-    generator_patches = IterPatchesImage(self.burst, self.flows, self.config,
-      pad_mode='constant', center_pad=False)
-    return generator_patches
-
   def preprocess(self, x):
-    if self.config.archi.model not in ['wavelets', 'laplacian']:
+    if self.model_name not in classic_models:
       return x - 0.5
     return x
 
   def postprocess(self, output):
-    if self.config.archi.model not in ['wavelets', 'laplacian']:
+    if self.model_name not in classic_models:
       return output + 0.5
     return output
 
@@ -80,12 +74,17 @@ class Evaluator:
       burst = burst.cuda(non_blocking=True)
       frame_gt = frame_gt.cuda(non_blocking=True)
 
-      if self.config.archi.n_colors == 1:
-        frame_gt = frame_gt.mean(2)
+      if n_batch == 0:
+        logging.info(f'burst: {burst.shape}')
+        logging.info(f'frame_gt: {frame_gt.shape}')
 
-      burst, frame_gt = self.preprocess(burst), self.preprocess(frame_gt)
       with torch.no_grad():
+        burst = self.preprocess(burst)
         outputs = self.model(burst)
+        outputs = self.postprocess(outputs)
+        if n_batch == 0:
+          logging.info(f'outputs: {outputs.shape}')
+
       outputs = outputs.squeeze(1)
       frame_gt = frame_gt.squeeze(1)
       running_loss += criterion(outputs, frame_gt)
@@ -115,7 +114,8 @@ class Evaluator:
 
   def inference_by_patch(self):
     """ inference by patch """
-    generator_patches = self.get_patches()
+    generator_patches = IterPatchesImage(
+      self.burst, self.meta_info_burst, self.config, optical_flows=True)
     logging.info('Block inference ...')
     for i, x in enumerate(generator_patches):
       if i == 0:
@@ -144,91 +144,68 @@ class Evaluator:
     # save result
     patch = 'patch' if self.eval_by_patch else 'full'
     image_type = self.config.eval.image_type
-    name = f'prediction_{self.burst_name}_{patch}_{image_type}.jpg'
+    patch_size = f'{self.config.eval.patch_size}'
+    name = f'prediction_{self.burst_name}_{patch}_{image_type}_{patch_size}.jpg'
     prediction_path = join(self.prediction_folder, name)
-    Image.fromarray(final_image).save(prediction_path, quality=95)
+    logging.info(f'prediction_path: {prediction_path}')
+    Image.fromarray(final_image).save(prediction_path, quality=100)
 
   def eval_model(self):
-    # load model
-    Model = models_config[self.config.archi.model]
-    self.model = Model(self.config)
-    self.model = nn.DataParallel(self.model)
-    self.model = self.model.cuda()
-    self.model.eval()
-
-    if self.burst_name == 'test':
-
-      best_ckpt, best_epoch, best_psnr = None, None, 0.
-      ckpts = utils.get_list_checkpoints(self.train_dir)
-      for ckpt_id, ckpt in enumerate(ckpts):
-        self.load_state(ckpt)
-        epoch = utils.get_epochs_from_ckpt(ckpt)
-        best_psnr, best_epoch, best_ckpt = self.eval_loop(
-          epoch, ckpt, best_psnr, best_epoch, best_ckpt)
-
-      new_name_best_ckpt = join(self.train_dir, "checkpoints", "best_model.ckpt.pth")
-      shutil.copyfile(best_ckpt, new_name_best_ckpt)
-      self.message.add('Best epoch', best_epoch, format='.0f')
-      self.message.add('Best PSNR', best_psnr, format='.5f')
-      logging.info(self.message.get_message())
-      logging.info("Done with batched inference.")
-
+    # load best checkpoint
+    original_burst_size = self.burst.shape
+    logging.info(f'original_burst_size: {original_burst_size}')
+    self.load_state()
+    if not self.eval_by_patch:
+      final_image = self.inference_full()
     else:
-
-      # load best checkpoint
-      self.load_state()
-
-      if not self.eval_by_patch:
-        final_image = self.inference_full()
+      if self.config.eval.image_type == 'raw':
+        p = self.patch_size // 4
       else:
-        final_image = self.inference_by_patch()
-      self.save_output(final_image)
+        p = self.patch_size // 2
+      padding = (p, p, p, p)
+      self.burst = F.pad(self.burst, padding, mode='replicate')
+      logging.info(f'self.burst before inference: {self.burst.shape}')
+      final_image = self.inference_by_patch()
 
-  def eval_wavelets(self):
-
-    # load model
-    Model = models_config[self.config.archi.model]
-    self.model = Model(self.config)
-    self.model = nn.DataParallel(self.model)
-    self.model = self.model.cuda()
-    self.model.eval()
-
-    if self.burst_name == 'test':
-
-      best_ckpt, best_epoch, best_psnr, epoch, ckpt = None, 0., 0., 0., None
-      best_psnr, best_epoch, best_ckpt = self.eval_loop(
-        epoch, ckpt, best_psnr, best_epoch, best_ckpt)
-
-      self.message.add('Best epoch', best_epoch, format='.0f')
-      self.message.add('PSNR score', best_psnr, format='.5f')
-      logging.info(self.message.get_message())
-      logging.info("Done with batched inference.")
- 
+    logging.info(f'final_image: {final_image.shape}')
+    if self.config.eval.image_type == 'raw':
+      r_x = (final_image.shape[-2] - original_burst_size[-2]*2) // 2
+      r_y = (final_image.shape[-1] - original_burst_size[-1]*2) // 2
     else:
-
-      original_burst_size = self.burst.shape
-      factor = 1 << 6
-      if not self.eval_by_patch:
-        # resize image to fit wavelets transform
-        if (self.burst.shape[-2] % factor != 0 or self.burst.shape[-1] % factor != 0): 
-          expand_x = factor * int(np.ceil(self.burst.shape[-2] / factor)) - self.burst.shape[-2]
-          expand_y = factor * int(np.ceil(self.burst.shape[-1] / factor)) - self.burst.shape[-1]
-          padding = (expand_y // 2, expand_y - expand_y // 2, expand_x // 2, expand_x -  expand_x // 2)
-          self.burst = F.pad(self.burst, padding, mode='replicate')
-        assert self.burst.shape[-2] % factor == 0 and self.burst.shape[-1] % factor == 0
-        final_image = self.inference_full()
-      else:
-        assert self.patch_size % factor == 0, f'patch_size needs to be a factor of {factor}'
-        # add half block size padding because block edge are dumped
-        padding = (self.patch_size // 2, self.patch_size // 2, self.patch_size // 2, self.patch_size // 2)
-        self.burst = F.pad(self.burst, padding, mode='replicate')
-        final_image = self.inference_by_patch()
-
       r_x = (final_image.shape[-2] - original_burst_size[-2]) // 2
       r_y = (final_image.shape[-1] - original_burst_size[-1]) // 2
-      if r_x > 0 and r_y > 0:
-        final_image = final_image[..., r_x:-r_x, r_y:-r_y]
-      self.save_output(final_image)
+    if r_x > 0 and r_y > 0:
+      final_image = final_image[..., r_x:-r_x, r_y:-r_y]
+    logging.info(f'final_image: {final_image.shape}')
+    self.save_output(final_image)
+
+  def eval_classic_models(self):
+
+    original_burst_size = self.burst.shape
+    factor = 1 << 6
+    if not self.eval_by_patch:
+      # resize image to fit wavelets transform
+      if (self.burst.shape[-2] % factor != 0 or self.burst.shape[-1] % factor != 0): 
+        expand_x = factor * int(np.ceil(self.burst.shape[-2] / factor)) - self.burst.shape[-2]
+        expand_y = factor * int(np.ceil(self.burst.shape[-1] / factor)) - self.burst.shape[-1]
+        padding = (expand_y // 2, expand_y - expand_y // 2, expand_x // 2, expand_x -  expand_x // 2)
+        self.burst = F.pad(self.burst, padding, mode='replicate')
+      assert self.burst.shape[-2] % factor == 0 and self.burst.shape[-1] % factor == 0
+      final_image = self.inference_full()
+    else:
+      # assert self.patch_size % factor == 0, f'patch_size needs to be a factor of {factor}'
+      # add half block size padding because block edge are dumped
+      logging.info(f'self.burst: {self.burst.shape}')
+      padding = (self.patch_size // 2, self.patch_size // 2, self.patch_size // 2, self.patch_size // 2)
+      self.burst = F.pad(self.burst, padding, mode='replicate')
+      logging.info(f'self.burst: {self.burst.shape}')
+      final_image = self.inference_by_patch()
+
+    r_x = (final_image.shape[-2] - original_burst_size[-2]) // 2
+    r_y = (final_image.shape[-1] - original_burst_size[-1]) // 2
+    if r_x > 0 and r_y > 0:
+      final_image = final_image[..., r_x:-r_x, r_y:-r_y]
+    self.save_output(final_image)
 
   @record
   def __call__(self):
@@ -247,6 +224,7 @@ class Evaluator:
     self.ngpus = self.config.cluster.ngpus
     cudnn.benchmark = True
 
+    self.model_name = self.config.archi.model
     self.data_dir = self.config.eval.eval_data_dir
     self.prediction_folder = self.config.eval.prediction_folder
     self.burst_name = self.config.eval.burst_name
@@ -259,19 +237,27 @@ class Evaluator:
       burst_size = self.config.data.burst_size
       image_type = self.config.eval.image_type
       scaling = self.config.eval.image_scaling
-      path = join(self.data_dir, self.burst_name)
       logging.info(f'Reading images: {self.burst_name}')
-      burst_obj = Burst(path, burst_size, image_type, scaling)
-      self.burst, meta_info_burst = burst_obj.get_burst()
+      burst_obj = Burst(self.data_dir, self.burst_name, burst_size, image_type, scaling)
+      self.burst, self.meta_info_burst = burst_obj.get_burst()
       logging.info(f'Burst shape: {self.burst.shape}')
 
       if self.align:
         logging.info(f'Aligning Images ...')
-        align_images = AlignImages()
-        self.burst = align_images(self.burst)
+        # align_images = AlignImages(self.config)
+        # self.burst = align_images(self.burst)
+        self.burst = align_burst(self.burst, self.config)
+      logging.info(f"Aligning Images ok... {self.burst.shape}")
 
-    if self.config.archi.model in ['wavelets', 'laplacian']:
-      final_image = self.eval_wavelets()
+    # load model
+    Model = models_config[self.model_name]
+    self.model = Model(self.config)
+    self.model = nn.DataParallel(self.model)
+    self.model = self.model.cuda()
+    self.model.eval()
+
+    if self.model_name in classic_models and basename(self.train_dir) in classic_models:
+      final_image = self.eval_classic_models()
     else:
       final_image = self.eval_model()
 

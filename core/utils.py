@@ -43,6 +43,36 @@ def npimage_to_torch(a, normalize=True, input_bgr=True):
   return a_t
 
 
+def flatten_raw_image(x):
+
+  def get_empty_array(x, shape):
+    if isinstance(x, np.ndarray):
+      x_out = np.zeros(shape, dtype=x.dtype)
+    elif isinstance(x, torch.Tensor):
+      x_out = torch.zeros(shape, dtype=x.dtype)
+      x_out = x_out.to(x.device)
+    else:
+      raise ValueError(f'x should be numpy of torch array')
+    return x_out
+
+  if len(x.shape) == 3 and x.shape[0] == 4:
+    x_out = get_empty_array(x, (x.shape[1] * 2, x.shape[2] * 2))
+    x_out[0::2, 0::2] = x[0, :, :]
+    x_out[0::2, 1::2] = x[1, :, :]
+    x_out[1::2, 0::2] = x[2, :, :]
+    x_out[1::2, 1::2] = x[3, :, :]
+    return im_out
+  elif len(x.shape) == 4 and x.shape[1] == 4: # batch
+    x_out = get_empty_array(x, (x.shape[0], 1, x.shape[2] * 2, x.shape[3] * 2))
+    x_out[:, 0, 0::2, 0::2] = x[:, 0, :, :]
+    x_out[:, 0, 0::2, 1::2] = x[:, 1, :, :]
+    x_out[:, 0, 1::2, 0::2] = x[:, 2, :, :]
+    x_out[:, 0, 1::2, 1::2] = x[:, 3, :, :]
+  else:
+    raise ValueError(f'x.shape not recognized: {x.shape}')
+  return x_out
+
+
 
 def pickle_load(path):
   """ Function to load pickle object """

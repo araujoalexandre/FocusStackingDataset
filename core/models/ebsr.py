@@ -24,8 +24,10 @@ class EBSR(nn.Module):
     front_RBs = 5
     back_RBs = self.config.archi.n_resgroups # 20
     groups = 8
+    n_colors = self.config.archi.n_colors
 
     wn = torch.nn.utils.weight_norm
+    # wn = torch.nn.Identity
     self.center = 0
     self.lrcn = self.config.archi.lrcn
     self.fusion_type = self.config.archi.fusion
@@ -35,7 +37,7 @@ class EBSR(nn.Module):
       LRCN = functools.partial(LRSCWideActResGroup, n_resblocks=n_resblocks, nf=nf)
 
     #### extract features (for each frame)
-    self.conv_first = wn(nn.Conv2d(3, nf, 3, 1, 1, bias=True))
+    self.conv_first = wn(nn.Conv2d(n_colors, nf, 3, 1, 1, bias=True))
     self.feature_extraction = make_layer(WARB, front_RBs)
     self.fea_L2_conv1 = wn(nn.Conv2d(nf, nf*2, 3, 2, 1, bias=True))
     self.fea_L3_conv1 = wn(nn.Conv2d(nf*2, nf*4, 3, 2, 1, bias=True))
@@ -72,13 +74,12 @@ class EBSR(nn.Module):
     self.upconv2 = wn(nn.Conv2d(nf, 64 * downsample_factor, 3, 1, 1, bias=True))
     self.pixel_shuffle = nn.PixelShuffle(int(np.sqrt(downsample_factor)))
     self.HRconv = wn(nn.Conv2d(64, 64, 3, 1, 1, bias=True))
-    self.conv_last = wn(nn.Conv2d(64, self.config.archi.n_colors, 3, 1, 1, bias=True))
+    self.conv_last = wn(nn.Conv2d(64, 3 * downsample_factor, 3, 1, 1, bias=True))
 
     #### skip #############
-    n_colors = self.config.archi.n_colors
     self.skip_pixel_shuffle = nn.PixelShuffle(int(np.sqrt(downsample_factor)))
-    self.skipup1 = wn(nn.Conv2d(3, nf * downsample_factor, 3, 1, 1, bias=True))
-    self.skipup2 = wn(nn.Conv2d(nf, n_colors * downsample_factor, 3, 1, 1, bias=True))
+    self.skipup1 = wn(nn.Conv2d(n_colors, nf * downsample_factor, 3, 1, 1, bias=True))
+    self.skipup2 = wn(nn.Conv2d(nf, 3 * downsample_factor, 3, 1, 1, bias=True))
 
     #### activation function
     self.relu = nn.ReLU(inplace=False)
@@ -89,10 +90,6 @@ class EBSR(nn.Module):
   def forward(self, x):
 
     with autocast(enabled=self.config.project.autocast):
-
-      if self.config.archi.shuffle_channels:
-        ix = torch.randperm(burst.shape[1])
-        x = x[:, ix]
 
       B, N, C, H, W = x.size()  # N video frames
       x_center = x[:, self.center, :, :, :].contiguous()
@@ -115,23 +112,6 @@ class EBSR(nn.Module):
       L1_fea = L1_fea.view(B, N, -1, H, W)
       L2_fea = L2_fea.view(B, N, -1, H // 2, W // 2)
       L3_fea = L3_fea.view(B, N, -1, H // 4, W // 4)
-
-      # #### PCD align
-      # # ref feature list
-      # ref_fea_l = [
-      #   L1_fea[:, self.center, :, :, :].clone(),
-      #   L2_fea[:, self.center, :, :, :].clone(),
-      #   L3_fea[:, self.center, :, :, :].clone()
-      # ]
-      # aligned_fea = []
-      # for i in range(N):
-      #   nbr_fea_l = [
-      #     L1_fea[:, i, :, :, :].clone(),
-      #     L2_fea[:, i, :, :, :].clone(),
-      #     L3_fea[:, i, :, :, :].clone()
-      #   ]
-      #   aligned_fea.append(self.pcd_align(nbr_fea_l, ref_fea_l))
-      # aligned_fea = torch.stack(aligned_fea, dim=1)  # [B, N, C, H, W] --> [B, T, C, H, W]
 
       #### PCD align
       # ref feature list
