@@ -73,30 +73,19 @@ if __name__ == '__main__':
   
   # cluster settings
   parser_cluster = parser.add_argument_group("cluster", "Cluster configurations")
-  parser_cluster.add_argument("--account", type=str, default='dci@gpu',
-                              help="Account to use for slurm.")
-  parser_cluster.add_argument("--ngpus", type=int, default=4, 
-                              help="Number of GPUs to use.")
-  parser_cluster.add_argument("--nnodes", type=int, default=1, 
-                              help="Number of nodes.")
-  parser_cluster.add_argument("--timeout", type=int, default=1200,
-                              help="Time of the Slurm job in minutes for training.")
-  parser_cluster.add_argument("--partition", type=str, default="gpu_p13",
-                              help="Partition to use for Slurm.")
-  parser_cluster.add_argument("--qos", type=str, default="qos_gpu-t3",
-                              help="Choose Quality of Service for slurm job.")
-  parser_cluster.add_argument("--constraint", type=str, default=None,
-                              help="Add constraint for choice of GPUs: 16 or 32")
-  parser_cluster.add_argument("--begin", type=str, default='',
-                              help="Set time to begin job")
-  parser_cluster.add_argument("--local", action='store_true',
-                              help="Execute with local machine instead of slurm.")
-  parser_cluster.add_argument("--debug", action="store_true",
-                              help="Activate debug mode.")
+  parser_cluster.add_argument("--account", type=str, help="Account to use for slurm.")
+  parser_cluster.add_argument("--ngpus", type=int, default=4, help="Number of GPUs to use.")
+  parser_cluster.add_argument("--nnodes", type=int, default=1, help="Number of nodes.")
+  parser_cluster.add_argument("--timeout", type=int, default=1200, help="Time of the Slurm job in minutes for training.")
+  parser_cluster.add_argument("--partition", type=str, help="Partition to use for Slurm.")
+  parser_cluster.add_argument("--qos", type=str, help="Choose Quality of Service for slurm job.")
+  parser_cluster.add_argument("--constraint", type=str, default=None, help="Add constraint for choice of GPUs: 16 or 32")
+  parser_cluster.add_argument("--begin", type=str, default='', help="Set time to begin job")
+  parser_cluster.add_argument("--local", action='store_true', help="Execute with local machine instead of slurm.")
+  parser_cluster.add_argument("--debug", action="store_true", help="Activate debug mode.")
   # default training is distributed (even on single node)
   # to force non-distributed training, activate single node
-  parser_cluster.add_argument("--single-node", action='store_true',
-                              help="Force non-distributed training.")
+  parser_cluster.add_argument("--single-node", action='store_true', help="Force non-distributed training.")
   
   parser_project = parser.add_argument_group("project", "Project parameters")
   parser_project.add_argument("--mode", type=str, default="train", choices=['train', 'eval'], 
@@ -150,9 +139,6 @@ if __name__ == '__main__':
   parser_eval.add_argument("--burst_name", type=str, default="all")
   parser_eval.add_argument("--eval_batch_size", type=int, default=8, help="The batch size to use for eval.")
   parser_eval.add_argument("--patch_size", type=int, default=256, help="size of the tile")
-  # parser_eval.add_argument("--crop", type=int, default=64, help="number of pixels to discard on the tiles edge")
-  # parser_eval.add_argument("--stride", type=int, default=None,
-  #                          help="stride size for overlaping windows, default is window size (minus crops on edges)")
   parser_eval.add_argument('--align', type=eval, default=1)
   parser_eval.add_argument('--eval_by_patch', type=eval, default=1)
   # optical flow parameters
@@ -211,24 +197,11 @@ if __name__ == '__main__':
 
   if config.project.mode == 'eval':
     if config.project.dataset == 'focus_stack_dataset':
-      data_dir = "/gpfsscratch/rech/yxj/uuc79vj/data/focus_stack_dataset/dataset/"
+      data_dir = "./data/focus_stack_dataset/dataset/"
       config.eval.eval_data_dir = join(data_dir, config.eval.dataset_split, config.eval.dataset_lens)
     else:
-      config.eval.eval_data_dir = f'/gpfsscratch/rech/yxj/uuc79vj/data/{config.project.dataset}'
+      config.eval.eval_data_dir = f'./data/{config.project.dataset}'
 
-  # cluster constraint
-  if config.cluster.constraint and config.cluster.partition != 'gpu_p5':
-    config.cluster.constraint = f"v100-{args.constraint}g"
-  
-  if config.cluster.partition == 'gpu_p5':
-    config.cluster.account = 'yxj@a100'
-    config.cluster.constraint = 'a100'
-
-  if config.cluster.partition == 'gpu_p13':
-    config.cluster.ngpus = 4
-  elif config.cluster.partition == 'gpu_p2':
-    config.cluster.ngpus = 8
-  
   # get the path of datsets
   if config.project.data_dir is None:
     config.project.data_dir = os.environ.get('DATADIR', None)

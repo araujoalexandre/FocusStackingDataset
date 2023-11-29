@@ -14,7 +14,7 @@ import torch.nn.functional as F
 import lpips
 from pytorch_msssim import ssim
 
-lpips_metric = lpips.LPIPS(net='alex', model_path='/gpfswork/rech/yxj/uuc79vj/lpips_ckpts/alexnet-owt-7be5be79.pth')
+lpips_metric = lpips.LPIPS(net='alex', model_path='./lpips_ckpts/alexnet-owt-7be5be79.pth')
 
 class L2Loss(nn.Module):
 
@@ -99,8 +99,8 @@ def compute_lpips(preds, target):
 
 def compute_metrics(folder):
 
-  preds_path = '/gpfswork/rech/yxj/uuc79vj/focus_stack/imsave'
-  target_path = '/gpfsscratch/rech/yxj/uuc79vj/data/focus_stack_dataset/dataset'
+  preds_path = './focus_stack/imsave'
+  target_path = './data/focus_stack_dataset/dataset'
   for split in ['train', 'test']:
     for lens in ['lumix_lens', 'olympus_macro_lens']:
       image_paths = glob.glob(join(preds_path, folder, 'focus_stack_dataset', split, lens, '**.jpg'))
