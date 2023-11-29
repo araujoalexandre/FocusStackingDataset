@@ -6,6 +6,7 @@ import cv2
 import natsort
 import logging
 import numpy as np
+import random
 import pandas as pd
 import PIL.Image as Image
 import torchvision.transforms as transforms
@@ -13,17 +14,91 @@ import torchvision.transforms.functional as F
 from os.path import join
 from torch.utils.data import Dataset
 from cv2 import imread
-from core.data_utils import unpack
+from core.data_utils import unpack, pack
 import core.datasets.camera_pipeline as camera
+
+
+def get_tmat(image_shape, translation, rotation, scale_factors):
+  """ Generates a transformation matrix corresponding to the input transformation parameters """
+  im_h, im_w = image_shape
+  t_mat = np.identity(3)
+  t_mat[0, 2] = translation[0]
+  t_mat[1, 2] = translation[1]
+  t_rot = cv2.getRotationMatrix2D((im_w * 0.5, im_h * 0.5), rotation, 1.0)
+  t_rot = np.concatenate((t_rot, np.array([0.0, 0.0, 1.0]).reshape(1, 3)))
+  t_scale = np.array([[scale_factors[0], 0.0, 0.0],
+                      [0.0, scale_factors[1], 0.0],
+                      [0.0, 0.0, 1.0]])
+  t_mat = t_scale @ t_rot @ t_mat
+  t_mat = t_mat[:2, :]
+  return t_mat
+
+
+def burst_data_augmentation(burst, config, interpolation_type='bilinear'):
+  """ Generates a burst of size burst_size from the input image by applying random transformations defined by
+  transformation_params, and downsampling the resulting burst by downsample_factor.
+  """
+  if interpolation_type == 'bilinear':
+    interpolation = cv2.INTER_LINEAR
+  elif interpolation_type == 'lanczos':
+    interpolation = cv2.INTER_LANCZOS4
+  else:
+    raise ValueError
+
+  burst = pack(burst)
+
+  h, w = burst.shape[-2], burst.shape[-1]
+  burst = burst.permute(0, 2, 3, 1)
+  burst = burst.numpy()
+
+  max_translation = config.data.max_translation
+  max_rotation = config.data.max_rotation
+  max_scale = config.data.max_scale
+  downsample_factor = config.data.downsample_factor
+  add_noise = config.data.add_noise
+    
+  burst_t = []
+  for i in range(len(burst)):
+
+    translation = (random.uniform(-max_translation, max_translation),
+                   random.uniform(-max_translation, max_translation))
+
+    rotation = random.uniform(-max_rotation, max_rotation)
+    
+    scale_factor = np.exp(random.uniform(-max_scale, max_scale))
+    scale_factor = (scale_factor, scale_factor)
+    
+    # Generate a affine transformation matrix corresponding to the sampled parameters
+    t_mat = get_tmat((h, w), translation, rotation, scale_factor)
+    
+    # Apply the sampled affine transformation
+    image_t = cv2.warpAffine(burst[i], t_mat,  (w, h), None, flags=interpolation, borderMode=cv2.BORDER_REFLECT)
+      
+    # Downsample the image
+    factor = 1/downsample_factor
+    image_t = cv2.resize(image_t, None, fx=factor, fy=factor, interpolation=interpolation)
+    
+    image_t = torch.FloatTensor(image_t).float()
+    burst_t.append(image_t)
+  
+  burst_t = torch.stack(burst_t).permute(0, 3, 1, 2)
+  
+  if add_noise:
+    shot_noise_level, read_noise_level = camera.random_noise_levels()
+    burst_t = camera.add_noise(burst_t, shot_noise_level, read_noise_level)
+
+  burst_t = unpack(burst_t)
+  return burst_t
+
 
 
 class FocusDataset:
 
   def __init__(self, config, root, split='train', transform=None):
+    self.config = config
     self.dataset_id = config.project.dataset_id
     self.crop_sz = config.data.crop_sz
     self.split = split
-    self.add_noise = config.data.add_noise
     root = join(root, 'dataset')
     df = pd.read_csv(join(root, 'dataset.csv'), sep=";")
     self.n_train_files = (df['set'] == 'train').sum()
@@ -66,9 +141,8 @@ class FocusDataset:
       burst = burst[:, :, crop:-crop or None, crop:-crop or None]
       target = target[:, :, crop:-crop or None, crop:-crop or None]
 
-      if self.add_noise:
-        shot_noise_level, read_noise_level = camera.random_noise_levels()
-        burst = camera.add_noise(burst, shot_noise_level, read_noise_level)
+      # data augmentation on raw burst
+      burst = burst_data_augmentation(burst, self.config)
 
     return burst, target
     

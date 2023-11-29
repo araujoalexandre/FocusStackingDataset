@@ -179,10 +179,10 @@ def demosaic(image):
     return out[0]
 
 
-def random_noise_levels():
+def random_noise_levels(max_shot_noise=0.012):
   """Generates random noise levels from a log-log linear distribution."""
   log_min_shot_noise = math.log(0.0001)
-  log_max_shot_noise = math.log(0.012)
+  log_max_shot_noise = math.log(max_shot_noise)
   log_shot_noise = random.uniform(log_min_shot_noise, log_max_shot_noise)
   shot_noise = math.exp(log_shot_noise)
   line = lambda x: 2.18 * x + 1.20

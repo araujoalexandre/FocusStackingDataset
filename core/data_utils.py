@@ -52,14 +52,14 @@ def unpack(rggb):
   raw[:, 0, 1::2, 1::2] = rggb[:, 3, :, :]
   return raw
 
-# def pack(raw):
-#   b, c, h, w = raw.shape
-#   rggb = torch.zeros((b, 4, h // 2, w // 2)).to(raw.device)
-#   rggb[:, 0, :, :] = raw[:, 0, ::2, ::2]
-#   rggb[:, 1, :, :] = raw[:, 0, ::2, 1::2]
-#   rggb[:, 2, :, :] = raw[:, 0, 1::2, ::2]
-#   rggb[:, 3, :, :] = raw[:, 0, 1::2, 1::2]
-#   return rggb
+def pack(raw):
+  b, c, h, w = raw.shape
+  rggb = torch.zeros((b, 4, h // 2, w // 2)).to(raw.device)
+  rggb[:, 0, :, :] = raw[:, 0, 0::2, 0::2]
+  rggb[:, 1, :, :] = raw[:, 0, 0::2, 1::2]
+  rggb[:, 2, :, :] = raw[:, 0, 1::2, 0::2]
+  rggb[:, 3, :, :] = raw[:, 0, 1::2, 1::2]
+  return rggb
 
 def get_cam2rgb(xyz2cam):
   """Generates random RGB -> Camera color correction matrices."""

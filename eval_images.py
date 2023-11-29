@@ -103,7 +103,7 @@ def compute_metrics(folder):
   target_path = '/gpfsscratch/rech/yxj/uuc79vj/data/focus_stack_dataset/dataset'
   for split in ['train', 'test']:
     for lens in ['lumix_lens', 'olympus_macro_lens']:
-      image_paths = glob.glob(join(preds_path, folder, split, lens, '**.jpg'))
+      image_paths = glob.glob(join(preds_path, folder, 'focus_stack_dataset', split, lens, '**.jpg'))
 
       print(split, lens, len(image_paths))
 
@@ -118,7 +118,7 @@ def compute_metrics(folder):
         crop_target = 9
         preds = np.array(Image.open(img_path))
         target = np.array(Image.open(helicon_focus_path))
-        target = target[crop_target:-crop_target, crop_target:-crop_target]
+        # target = target[crop_target:-crop_target, crop_target:-crop_target]
 
         psrn_score = compute_psnr(preds, target)
         ssim_score = compute_ssim(preds, target)

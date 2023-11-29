@@ -39,7 +39,7 @@ class Trainer:
     get_model_id = lambda x: int(x.strip('.pth').strip('model.ckpt-'))
     checkpoints = sorted(
       [ckpt.split('/')[-1] for ckpt in checkpoints], key=get_model_id)
-    path_last_ckpt = join(self.train_dir, checkpoints[-1])
+    path_last_ckpt = join(self.train_dir, "checkpoints", checkpoints[-1])
     self.checkpoint = torch.load(path_last_ckpt)
     self.model.load_state_dict(self.checkpoint['model_state_dict'])
     self.optimizer.load_state_dict(self.checkpoint['optimizer_state_dict'])

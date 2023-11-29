@@ -69,17 +69,17 @@ class EBSR(nn.Module):
           wn(nn.Conv2d(nf*(back_RBs+1), nf, 1)))
 
     #### upsampling
-    downsample_factor = self.config.data.downsample_factor
+    downsample_factor = self.config.data.downsample_factor ** 2
     self.upconv1 = wn(nn.Conv2d(nf, nf * downsample_factor, 3, 1, 1, bias=True))
-    self.upconv2 = wn(nn.Conv2d(nf, 64 * downsample_factor, 3, 1, 1, bias=True))
+    self.upconv2 = wn(nn.Conv2d(nf, 64, 3, 1, 1, bias=True))
     self.pixel_shuffle = nn.PixelShuffle(int(np.sqrt(downsample_factor)))
     self.HRconv = wn(nn.Conv2d(64, 64, 3, 1, 1, bias=True))
-    self.conv_last = wn(nn.Conv2d(64, 3 * downsample_factor, 3, 1, 1, bias=True))
+    self.conv_last = wn(nn.Conv2d(64, 3, 3, 1, 1, bias=True))
 
     #### skip #############
     self.skip_pixel_shuffle = nn.PixelShuffle(int(np.sqrt(downsample_factor)))
     self.skipup1 = wn(nn.Conv2d(n_colors, nf * downsample_factor, 3, 1, 1, bias=True))
-    self.skipup2 = wn(nn.Conv2d(nf, 3 * downsample_factor, 3, 1, 1, bias=True))
+    self.skipup2 = wn(nn.Conv2d(nf, 3, 3, 1, 1, bias=True))
 
     #### activation function
     self.relu = nn.ReLU(inplace=False)
@@ -96,7 +96,8 @@ class EBSR(nn.Module):
 
       #### skip module ########
       skip1 = self.relu(self.skip_pixel_shuffle(self.skipup1(x_center)))
-      skip2 = self.skip_pixel_shuffle(self.skipup2(skip1))
+      # skip2 = self.skip_pixel_shuffle(self.skipup2(skip1))
+      skip2 = self.skipup2(skip1)
 
       #### extract LR features
       L1_fea = self.relu(self.conv_first(x.view(-1, C, H, W)))
@@ -139,7 +140,8 @@ class EBSR(nn.Module):
       out = self.recon_trunk(fea)
       out = self.relu(self.pixel_shuffle(self.upconv1(out)))
       out = skip1 + out
-      out = self.relu(self.pixel_shuffle(self.upconv2(out)))
+      # out = self.relu(self.pixel_shuffle(self.upconv2(out)))
+      out = self.relu(self.upconv2(out))
       out = self.relu(self.HRconv(out))
       out = self.conv_last(out)
 

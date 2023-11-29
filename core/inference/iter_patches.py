@@ -27,14 +27,17 @@ class IterPatchesImage:
 
     if config.eval.image_type == 'raw':
       burst = flatten_raw_image(burst)
-    logging.info(f'burst shape after flatten: {burst.shape}')
 
-    self.burst, self.original_padding = self.padding(burst, config.eval.patch_size, 'replicate')
-    self.flows, _ = self.padding(self.flows, config.eval.patch_size, 'constant')
-    
+    logging.info(f"burst size: {burst.shape}")
+
+    # self.burst, self.original_padding = self.padding(burst, config.eval.patch_size, 'replicate')
+    # self.flows, _ = self.padding(self.flows, config.eval.patch_size, 'constant')
+
+    self.burst = burst
+    self.original_padding = (0, 0, 0, 0)
+
     self.burst_size = self.burst.shape
     self.in_channels = config.archi.n_colors
-    # self.in_channels = 4
     self.out_channels = 3 # we always output rgb images
     self.output_size = burst.shape[2:]
     self.batch_size = config.eval.eval_batch_size
@@ -44,16 +47,16 @@ class IterPatchesImage:
     self.last_padding = 16
 
     self.block_size_in = config.eval.patch_size + self.last_padding * 2
-    self.block_size_out = config.eval.patch_size
+    self.block_size_out = config.eval.patch_size * self.upscale
 
     self.blocks_coord = self.get_coord_blocks(self.burst)
 
     self.n_blocks = self.blocks_coord[0].shape[1]
-    self.batch_out_blocks = torch.zeros(
+    self.batch_out_blocks = torch.empty(
       self.n_blocks, self.out_channels, self.block_size_out, self.block_size_out)
 
     self.all_indexes = list(range(0, self.n_blocks, self.batch_size))
-    logging.info(f'all_indexes, {len(self.all_indexes)}')
+    logging.info(f'Number of batches: {len(self.all_indexes)}')
 
   def padding(self, x, factor, pad_mode):
     expand_x = np.int32(2**np.ceil(np.log2(x.shape[-2])) - x.shape[-2])
@@ -72,8 +75,8 @@ class IterPatchesImage:
     return out
 
   def col2im(self, x):
-    output_size = np.array(self.burst_size[2:]) - 2 * self.last_padding
-    kernel_size = self.block_size_out * self.upscale
+    output_size = (np.array(self.burst_size[2:]) - 2 * self.last_padding) * self.upscale
+    kernel_size = self.block_size_out # * self.upscale
     stride = self.block_stride * self.upscale
     fold_params = dict(output_size=output_size, kernel_size=kernel_size,
                  stride=stride, padding=0, dilation=1)
@@ -151,7 +154,7 @@ class IterPatchesImage:
 
   def add_processed_patches(self, batch_patches):
     start = self.indexes[0]
-    p = self.last_padding
+    p = self.last_padding * self.upscale
     batch_patches_cropped = batch_patches[..., p:-p, p:-p]
     self.batch_out_blocks[start:start+self.batch_size, ...] = batch_patches_cropped
 
@@ -160,9 +163,10 @@ class IterPatchesImage:
     :param blocks: processed blocks
     :return: image of averaged estimates
     """
+    del self.burst, self.flows, self.blocks_coord
     n_blocks, out_channels, block_size_out, block_size_out = self.batch_out_blocks.shape
     batch_out_blocks_flatten = self.batch_out_blocks.reshape(
-      1, n_blocks, out_channels * (block_size_out * self.upscale)**2)
+      1, n_blocks, out_channels * block_size_out**2)
     batch_out_blocks_flatten = batch_out_blocks_flatten.permute(0, 2, 1)
     output = self.col2im(batch_out_blocks_flatten)
     return self.remove_padding(output)

@@ -106,7 +106,7 @@ if __name__ == '__main__':
   parser_project.add_argument("--data_dir", type=str,
                               help="Name of the data directory.")
   parser_project.add_argument("--dataset", type=str, default='focus_stack_dataset')
-  parser_project.add_argument("--dataset_id", type=str, default='3') # 3  = JPG / '_raw' = RAW
+  parser_project.add_argument("--dataset_id", type=str, default='_raw') # 3  = JPG / '_raw' = RAW
   parser_project.add_argument("--seed", type=int,
                               help="Make the training deterministic.")
   parser_project.add_argument("--logging_verbosity", type=str, default='INFO',
@@ -116,15 +116,15 @@ if __name__ == '__main__':
   
   # parameters training
   parser_training = parser.add_argument_group("training", "Training parameters")
-  parser_training.add_argument("--epochs", type=int, default=600,
+  parser_training.add_argument("--epochs", type=int, default=300,
                                help="Number of epochs for training.")
   parser_training.add_argument("--optimizer", type=str, default="adam",
                                help="Optimizer to use for training.")
   parser_training.add_argument("--wd", type=float, default=0,
                                help="Weight decay to use for training.")
-  parser_training.add_argument("--lr", type=float, default=0.0004,
+  parser_training.add_argument("--lr", type=float, default=0.0001,
                                help="The learning rate to use for training.")
-  parser_training.add_argument("--decay", type=str, default='80-150',
+  parser_training.add_argument("--decay", type=str, default='100-200',
                                help="Decay to use for the learning rate schedule.")
   parser_training.add_argument("--gamma", type=float, default=0.5,
                                help="Gamma value to use for learning rate schedule.")
@@ -132,7 +132,7 @@ if __name__ == '__main__':
                                help="Clip the norm of the gradient during training.")
   parser_training.add_argument("--gradient_clip_by_value", type=float, default=None,
                                help="Clip the gradient by value during training.")
-  parser_training.add_argument("--batch_size", type=int, default=2,
+  parser_training.add_argument("--batch_size", type=int, default=8,
                                help="The batch size to use for training.")
   parser_training.add_argument("--frequency_log_steps", type=int, default=10,
                                help="Print log for every step.")
@@ -141,27 +141,29 @@ if __name__ == '__main__':
   
   # parameters eval
   parser_eval = parser.add_argument_group("eval", "Evaluation parameters")
-  parser_eval.add_argument("--dataset_split", type=str, default='train', choices=['train', 'test', 'others'])
+  parser_eval.add_argument("--dataset_split", type=str)
   parser_eval.add_argument("--dataset_lens", type=str, default='lumix_lens',
                            choices=['lumix_lens', 'olympus_macro_lens', ''])
   parser_eval.add_argument("--prediction_folder", type=str, default="./imsave")
-  parser_eval.add_argument("--image_type", type=str, choices=['raw', 'jpg', 'aligned', ''])
+  parser_eval.add_argument("--image_type", type=str, default='raw', choices=['raw', 'jpg', 'aligned', ''])
   parser_eval.add_argument("--image_scaling", type=float, default=1)
   parser_eval.add_argument("--burst_name", type=str, default="all")
-  parser_eval.add_argument("--eval_batch_size", type=int, default=32, help="The batch size to use for eval.")
+  parser_eval.add_argument("--eval_batch_size", type=int, default=8, help="The batch size to use for eval.")
   parser_eval.add_argument("--patch_size", type=int, default=256, help="size of the tile")
   # parser_eval.add_argument("--crop", type=int, default=64, help="number of pixels to discard on the tiles edge")
   # parser_eval.add_argument("--stride", type=int, default=None,
   #                          help="stride size for overlaping windows, default is window size (minus crops on edges)")
-  parser_eval.add_argument('--align', action='store_true')
-  parser_eval.add_argument('--eval_by_patch', action='store_true')
+  parser_eval.add_argument('--align', type=eval, default=1)
+  parser_eval.add_argument('--eval_by_patch', type=eval, default=1)
   # optical flow parameters
   parser_eval.add_argument("--of_scale", type=int, default=4)
   parser_eval.add_argument("--of_win", type=int, default=300)
 
+  parser_eval.add_argument("--noise", type=int, default=None)
+
   # parameters for data generation pipeline
   parser_data = parser.add_argument_group("data", "Data pipeline parameters.")
-  parser_data.add_argument("--crop_sz", type=int, default=128,
+  parser_data.add_argument("--crop_sz", type=int, default=64,
                            help="Size of crop to use for data generation.")
   parser_data.add_argument("--burst_size", type=int, default=30,
                            help="Size of the burst to use for data generation.")
@@ -169,8 +171,6 @@ if __name__ == '__main__':
                            help='Max translation to use during Synthetic Burst Generation.')
   parser_data.add_argument('--max_rotation', type=float, default=0.,
                            help='Max rotation to use during Synthetic Burst Generation.')
-  parser_data.add_argument('--max_shear', type=float, default=0.,
-                           help='Max shear to use during Synthetic Burst Generation.')
   parser_data.add_argument('--max_scale', type=float, default=0.,
                            help='Max scale to use during Synthetic Burst Generation.')
   parser_data.add_argument('--border_crop', type=int, default=24,
@@ -183,7 +183,7 @@ if __name__ == '__main__':
   
   # parameters of the model architecture
   parser_archi = parser.add_argument_group("archi", "Model architecture parameters.")
-  parser_archi.add_argument("--model", type=str)
+  parser_archi.add_argument("--model", default='ebsr', type=str)
   parser_archi.add_argument("--n_channels", type=int, default=64)
   parser_archi.add_argument("--fusion", type=str, default="conv",
                             help="Define the fusion block")
@@ -195,7 +195,7 @@ if __name__ == '__main__':
                             help='number of residual groups')
   parser_archi.add_argument("--lrcn", type=eval, default=True,
                             help='use long-range concatenating network')
-  parser_archi.add_argument("--n_colors", type=int, default=3,
+  parser_archi.add_argument("--n_colors", type=int, default=1,
                             help='number of color channels to use')
   
   # parse all arguments and define config object
@@ -223,6 +223,11 @@ if __name__ == '__main__':
   if config.cluster.partition == 'gpu_p5':
     config.cluster.account = 'yxj@a100'
     config.cluster.constraint = 'a100'
+
+  if config.cluster.partition == 'gpu_p13':
+    config.cluster.ngpus = 4
+  elif config.cluster.partition == 'gpu_p2':
+    config.cluster.ngpus = 8
   
   # get the path of datsets
   if config.project.data_dir is None:

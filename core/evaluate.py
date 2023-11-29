@@ -18,6 +18,7 @@ from core.inference.iter_patches import IterPatchesImage
 from core.inference.align_key_points import align_burst
 from core.data_utils import Burst
 from core.datasets.readers import get_data_dir
+import core.datasets.camera_pipeline as camera
 
 from PIL import Image
 import numpy as np
@@ -122,8 +123,12 @@ class Evaluator:
         logging.info(f'x: {x.shape}')
       x = x.cuda()
       x = self.preprocess(x)
+      if self.config.project.autocast:
+        x = x.half()
       with torch.no_grad():
         output = self.model(x)
+      if i == 0:
+        logging.info(f'output: {output.shape}')
       output = output.float().cpu()
       output = self.postprocess(output)
       generator_patches.add_processed_patches(output) 
@@ -152,8 +157,8 @@ class Evaluator:
 
   def eval_model(self):
     # load best checkpoint
-    original_burst_size = self.burst.shape
-    logging.info(f'original_burst_size: {original_burst_size}')
+    original_burst_size = np.array(self.burst.shape)
+    original_burst_size = original_burst_size * self.config.data.downsample_factor
     self.load_state()
     if not self.eval_by_patch:
       final_image = self.inference_full()
@@ -241,6 +246,11 @@ class Evaluator:
       burst_obj = Burst(self.data_dir, self.burst_name, burst_size, image_type, scaling)
       self.burst, self.meta_info_burst = burst_obj.get_burst()
       logging.info(f'Burst shape: {self.burst.shape}')
+
+      # if config.eval.noise:
+      #   logging.info('ADDING NOISE')
+      #   shot_noise_level, read_noise_level = camera.random_noise_levels(config.eval.noise)
+      #   self.burst = camera.add_noise(self.burst, shot_noise_level, read_noise_level)
 
       if self.align:
         logging.info(f'Aligning Images ...')
