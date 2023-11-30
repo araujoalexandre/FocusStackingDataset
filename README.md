@@ -1,5 +1,5 @@
 # Towards Real-World Focus Stacking with Deep Learning
-### [Paper](https://arxiv.org/abs/2311.17846) | [Dataset](https://drive.google.com/file/d/1aCskAEDjDn2V9t4R6MMLFmNZgMemHdCN/view?usp=sharing) | [Bibtex](#bibtex) 
+### [Paper](https://arxiv.org/abs/2311.17846) | [Dataset](https://drive.google.com/file/d/1aCskAEDjDn2V9t4R6MMLFmNZgMemHdCN/view?usp=sharing)
 
 ## Abstract
 
